@@ -5,7 +5,8 @@
   [1. Overview](#1-overview)  
   [2. HW Description](#2-hw-description)  
   [3. Setup](#3-setup)  
-  [4. Programming Guide](#4-programming-guide)
+  [4. Programming Guide](#4-programming-guide)  
+  [5. SparsePIM Analytical Model Extension](#5-sparsepim-analytical-model-extension)
 
 ## 1. Overview
 
@@ -294,6 +295,130 @@ Here, the buffer must be at least 256bit size container.
 ```
 
 * The other basic operation flow on PIM for GEMV(Matrix Vector multiplication), Element-wise operation are described in the `src/tests/PIMKernel.cpp`.
+
+## 5. SparsePIM Analytical Model Extension
+
+This fork also contains an in-progress analytical model for SparsePIM-style SpMV.
+The goal is to reproduce the SparsePIM paper's GPU-baseline speedups for the
+paper sparse matrix workloads, then use the validated model to evaluate
+algorithmic variants of SparsePIM preprocessing and execution.
+
+The SparsePIM preprocessing inputs are expected under:
+
+```bash
+../SparsePIM/guided_kmeans_coo_results/<matrix>/
+```
+
+Each matrix directory should contain the Guided K-means COO preprocessing outputs
+used by the model:
+
+```text
+reordered_matrix.txt
+column_permutation.txt
+clusters.txt
+```
+
+The paper workload mapping and target speedups are recorded in:
+
+```text
+SPARSEPIM_WORKLOAD_TARGETS.md
+```
+
+### 5.1 Latency Scope
+
+The target comparison scope follows the SparsePIM paper:
+
+* GPU baseline: host-to-device input transfer, cuSPARSE SpMV kernel execution,
+  and device-to-host result retrieval per iteration.
+* SparsePIM: kernel programming/init, PIM computation, and result retrieval per
+  iteration.
+
+The model therefore reports end-to-end per-iteration latency estimates, not only
+the PIM compute phase.
+
+### 5.2 Model Variants
+
+The original DRAF+BGA model variants are preserved:
+
+```bash
+./sim --gtest_filter=ClusteredSpmvBenchFixture.sparsepim_guided_kmeans_coo_draf_bga_model
+./sim --gtest_filter=ClusteredSpmvBenchFixture.sparsepim_guided_kmeans_coo_draf_bga_conservative_model
+./sim --gtest_filter=ClusteredSpmvBenchFixture.sparsepim_guided_kmeans_coo_draf_bga_v2_model
+./sim --gtest_filter=ClusteredSpmvBenchFixture.sparsepim_guided_kmeans_coo_draf_bga_v2_conservative_model
+./sim --gtest_filter=ClusteredSpmvBenchFixture.sparsepim_guided_kmeans_coo_draf_bga_v21_model
+./sim --gtest_filter=ClusteredSpmvBenchFixture.sparsepim_guided_kmeans_coo_draf_bga_v21_conservative_model
+```
+
+Two newer structural variants were added for DRAF padding analysis:
+
+```bash
+# v3: charges all DRAF padded NZE slots as exposed work
+./sim --gtest_filter=ClusteredSpmvBenchFixture.sparsepim_guided_kmeans_coo_draf_bga_v3_structural_model
+
+# v4: charges only critical-path DRAF padding at the bank-group level
+./sim --gtest_filter=ClusteredSpmvBenchFixture.sparsepim_guided_kmeans_coo_draf_bga_v4_structural_model
+```
+
+To run a single matrix:
+
+```bash
+SPMV_BENCH_MATRIX=Stanford ./sim --gtest_filter=ClusteredSpmvBenchFixture.sparsepim_guided_kmeans_coo_draf_bga_v4_structural_model
+```
+
+### 5.3 Current Findings
+
+The v3 model was introduced after observing that v2.1 significantly
+overestimated SparsePIM speedup for highly sparse graph/web workloads such as
+Stanford and webbase-1M. The v3 model adds an explicit DRAF padded-zero work
+term:
+
+```text
+padded_zero_compute_cycle = ceil(draf_nze_padding / 16)
+```
+
+This matches the SparsePIM paper's explanation that DRAF padding increases
+memory usage and operation count under synchronous column access. It brought
+Stanford and webbase-1M close to their target speedups, but it over-penalized
+many regular or denser workloads.
+
+The v4 model then replaced total padding with a bank-group critical-path padding
+estimate:
+
+```text
+actual_group_step = ceil(DRAF column groups in a logical bank group / 2 banks)
+ideal_group_step  = (nonzeros in the same logical bank group / 16 NZEs) / 2 banks
+critical_padding  = sum(max(0, actual_group_step - ideal_group_step))
+```
+
+This improved the overall geometric mean compared with v3, but it currently
+overestimates speedup for fragmented sparse workloads such as
+soc-sign-epinions, Stanford, and webbase-1M. The current interpretation is that
+critical-path padding alone hides too much of the DRAF format conversion,
+memory-expansion, and synchronous dummy-access overhead for low-NNZ-column
+workloads.
+
+The next structural refinement should combine critical-path padding with an
+exposure term derived from:
+
+```text
+single_nnz_column_ratio
+low_nnz_column_ratio
+draf_memory_expansion
+bg_imbalance
+```
+
+The detailed model notes are in:
+
+```text
+SPARSEPIM_V3_STRUCTURAL_MODEL.md
+```
+
+Both v3 and v4 print machine-readable result markers:
+
+```text
+V3_RESULT_CSV,<matrix>,<gpu_ms>,<target_speedup>,<target_pim_ms>,<model_ms>,<model_speedup>,...
+V4_RESULT_CSV,<matrix>,<gpu_ms>,<target_speedup>,<target_pim_ms>,<model_ms>,<model_speedup>,...
+```
 
 ### Contact
 * Shin-haeng Kang (s-h.kang@samsung.com)
