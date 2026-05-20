@@ -67,6 +67,7 @@ class PIMKernel
     void parkIn();
     void parkOut();
     void changePIMMode(dramMode mode1, dramMode mode2);
+    void configurePIMControl(pimBankType bank_types = pimBankType::ALL_BANK);
     void addTransactionAll(bool isWrite, int bg, int bank, int row, int col, const std::string tag,
                            BurstType* bst, bool use_barrier = false, int num_loop = 1);
     void addTransactionAll(bool isWrite, int bg, int bank, int row, int col, BurstType* bst,

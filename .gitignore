@@ -35,7 +35,7 @@ sim
 # Temporary or Utility files
 *.swp
 *.orig
+*.log
 tags
 .sconsign.dblite
 bin
-

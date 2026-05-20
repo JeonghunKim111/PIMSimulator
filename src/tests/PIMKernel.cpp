@@ -148,6 +148,12 @@ void PIMKernel::changePIMMode(dramMode curMode, dramMode nextMode)
     addBarrier();
 }
 
+void PIMKernel::configurePIMControl(pimBankType bank_types)
+{
+    setControl(&bst_hab_pim_, true, getToggleCond(bank_types), false, true);
+    setControl(&bst_hab_, false, getToggleCond(bank_types), false, true);
+}
+
 /*
 void PIMKernel::preprocessBn(NumpyBurstType* mean_npbst, NumpyBurstType* var_npbst,
                              NumpyBurstType* gamma_npbst, NumpyBurstType* beta_npbst,
