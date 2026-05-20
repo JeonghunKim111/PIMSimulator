@@ -357,6 +357,10 @@ Two newer structural variants were added for DRAF padding analysis:
 
 # v4: charges only critical-path DRAF padding at the bank-group level
 ./sim --gtest_filter=ClusteredSpmvBenchFixture.sparsepim_guided_kmeans_coo_draf_bga_v4_structural_model
+
+# v5: starts from v4 critical-path padding and exposes hidden padding
+# according to fragmentation, memory expansion, and BG imbalance
+./sim --gtest_filter=ClusteredSpmvBenchFixture.sparsepim_guided_kmeans_coo_draf_bga_v5_structural_model
 ```
 
 To run a single matrix:
@@ -418,7 +422,28 @@ Both v3 and v4 print machine-readable result markers:
 ```text
 V3_RESULT_CSV,<matrix>,<gpu_ms>,<target_speedup>,<target_pim_ms>,<model_ms>,<model_speedup>,...
 V4_RESULT_CSV,<matrix>,<gpu_ms>,<target_speedup>,<target_pim_ms>,<model_ms>,<model_speedup>,...
+V5_RESULT_CSV,<matrix>,<gpu_ms>,<target_speedup>,<target_pim_ms>,<model_ms>,<model_speedup>,...
+V6_RESULT_CSV,<matrix>,<gpu_ms>,<target_speedup>,<target_pim_ms>,<model_ms>,<model_speedup>,...
 ```
+
+When the structural model tests are run for all 16 workloads, they also write
+summary files:
+
+```text
+spmv_guided_kmeans_draf_bga_v3_structural_results.txt
+spmv_guided_kmeans_draf_bga_v4_structural_results.txt
+spmv_guided_kmeans_draf_bga_v5_structural_results.txt
+spmv_guided_kmeans_draf_bga_v6_structural_results.txt
+spmv_guided_kmeans_draf_bga_v3_phase_diagnostics.txt
+spmv_guided_kmeans_draf_bga_v4_phase_diagnostics.txt
+spmv_guided_kmeans_draf_bga_v5_phase_diagnostics.txt
+spmv_guided_kmeans_draf_bga_v6_phase_diagnostics.txt
+```
+
+The v6 structural model keeps v5 padding exposure and separates BGA accumulation
+into raw, hidden, and exposed cycles. Its first full-suite run improves GMean
+model speedup from v5 `1.477x` to v6 `1.809x`, while the rounded paper-target
+GMean is `2.197x`.
 
 ### Contact
 * Shin-haeng Kang (s-h.kang@samsung.com)

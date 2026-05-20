@@ -174,6 +174,68 @@ struct DrafCriticalPathStats
     double bg_imbalance = 0.0;
 };
 
+struct DrafPaddingExposureStats
+{
+    double total_padding_steps = 0.0;
+    double critical_padding_steps = 0.0;
+    double hidden_padding_steps = 0.0;
+    double fragmentation = 0.0;
+    double memory_pressure = 0.0;
+    double imbalance_pressure = 0.0;
+    double exposure_factor = 0.0;
+    double exposed_hidden_padding = 0.0;
+    double effective_padding_steps = 0.0;
+};
+
+struct BgaOverlapStats
+{
+    uint64_t raw_accumulate_cycle = 0;
+    uint64_t exposed_accumulate_cycle = 0;
+    uint64_t hidden_accumulate_cycle = 0;
+    double regularity_score = 0.0;
+    double reuse_score = 0.0;
+    double padding_guard = 0.0;
+    double overlap_factor = 0.0;
+};
+
+struct StructuralModelResult
+{
+    string matrix;
+    double gpu_ms = 0.0;
+    double target_speedup = 0.0;
+    double target_pim_ms = 0.0;
+    double model_ms = 0.0;
+    double model_speedup = 0.0;
+    double speedup_error_ratio = 0.0;
+    uint64_t total_cycle = 0;
+    uint64_t setup_cycle = 0;
+    uint64_t draf_row_fetch_cycle = 0;
+    uint64_t draf_compute_trigger_cycle = 0;
+    uint64_t padding_cycle = 0;
+    uint64_t bga_accumulate_cycle = 0;
+    uint64_t bga_output_readback_cycle = 0;
+    uint64_t final_reduce_cycle = 0;
+    double draf_padding_ratio = 0.0;
+    double draf_memory_expansion = 0.0;
+    double critical_padding = 0.0;
+    double critical_padding_ratio = 0.0;
+    double bg_imbalance = 0.0;
+    double total_padding_steps = 0.0;
+    double hidden_padding_steps = 0.0;
+    double fragmentation = 0.0;
+    double memory_pressure = 0.0;
+    double imbalance_pressure = 0.0;
+    double exposure_factor = 0.0;
+    double exposed_hidden_padding = 0.0;
+    double effective_padding_steps = 0.0;
+    uint64_t bga_raw_accumulate_cycle = 0;
+    uint64_t bga_hidden_accumulate_cycle = 0;
+    double bga_regularity_score = 0.0;
+    double bga_reuse_score = 0.0;
+    double bga_padding_guard = 0.0;
+    double bga_overlap_factor = 0.0;
+};
+
 uint64_t ceilDiv(uint64_t value, uint64_t divisor)
 {
     return (value + divisor - 1) / divisor;
@@ -299,6 +361,238 @@ double gpuBaselineMs(const string& matrix)
     };
     auto it = baselines.find(matrix);
     return it == baselines.end() ? 0.0 : it->second;
+}
+
+string structuralVariantName(int structural_variant)
+{
+    if (structural_variant >= 6)
+        return "v6_bga_overlap";
+    if (structural_variant >= 5)
+        return "v5_exposure";
+    if (structural_variant >= 4)
+        return "v4_critical_path";
+    return "v3_total_padding";
+}
+
+string structuralResultPath(int structural_variant)
+{
+    if (structural_variant >= 6)
+        return "spmv_guided_kmeans_draf_bga_v6_structural_results.txt";
+    if (structural_variant >= 5)
+        return "spmv_guided_kmeans_draf_bga_v5_structural_results.txt";
+    if (structural_variant >= 4)
+        return "spmv_guided_kmeans_draf_bga_v4_structural_results.txt";
+    return "spmv_guided_kmeans_draf_bga_v3_structural_results.txt";
+}
+
+string structuralDiagnosticPath(int structural_variant)
+{
+    if (structural_variant >= 6)
+        return "spmv_guided_kmeans_draf_bga_v6_phase_diagnostics.txt";
+    if (structural_variant >= 5)
+        return "spmv_guided_kmeans_draf_bga_v5_phase_diagnostics.txt";
+    if (structural_variant >= 4)
+        return "spmv_guided_kmeans_draf_bga_v4_phase_diagnostics.txt";
+    return "spmv_guided_kmeans_draf_bga_v3_phase_diagnostics.txt";
+}
+
+double geomeanSpeedup(const vector<StructuralModelResult>& results,
+                      function<double(const StructuralModelResult&)> value_fn)
+{
+    double sum_log = 0.0;
+    uint64_t count = 0;
+    for (const StructuralModelResult& result : results)
+    {
+        double value = value_fn(result);
+        if (value <= 0.0)
+            continue;
+        sum_log += log(value);
+        count++;
+    }
+    return count == 0 ? 0.0 : exp(sum_log / count);
+}
+
+void writeStructuralResults(int structural_variant,
+                            const vector<StructuralModelResult>& results)
+{
+    string path = structuralResultPath(structural_variant);
+    ofstream out(path);
+    if (!out)
+        throw runtime_error("failed to open " + path);
+
+    out << "# SparsePIM DRAF+BGA structural model results\n";
+    out << "model_variant: " << structuralVariantName(structural_variant) << "\n";
+    out << "latency_scope: setup + DRAF access + padding model + BGA + result readback\n";
+    out << "columns: matrix gpu_ms target_speedup target_pim_ms model_ms model_speedup "
+           "speedup_error_ratio total_cycle setup_cycle draf_row_fetch_cycle "
+           "draf_compute_trigger_cycle padding_cycle bga_accumulate_cycle "
+           "bga_output_readback_cycle final_reduce_cycle draf_padding_ratio "
+           "draf_memory_expansion critical_padding critical_padding_ratio bg_imbalance "
+           "total_padding_steps hidden_padding_steps fragmentation memory_pressure "
+           "imbalance_pressure exposure_factor exposed_hidden_padding effective_padding_steps "
+           "bga_raw_accumulate_cycle bga_hidden_accumulate_cycle bga_regularity_score "
+           "bga_reuse_score bga_padding_guard bga_overlap_factor\n";
+
+    for (const StructuralModelResult& result : results)
+    {
+        out << result.matrix << " "
+            << result.gpu_ms << " "
+            << result.target_speedup << " "
+            << result.target_pim_ms << " "
+            << result.model_ms << " "
+            << result.model_speedup << " "
+            << result.speedup_error_ratio << " "
+            << result.total_cycle << " "
+            << result.setup_cycle << " "
+            << result.draf_row_fetch_cycle << " "
+            << result.draf_compute_trigger_cycle << " "
+            << result.padding_cycle << " "
+            << result.bga_accumulate_cycle << " "
+            << result.bga_output_readback_cycle << " "
+            << result.final_reduce_cycle << " "
+            << result.draf_padding_ratio << " "
+            << result.draf_memory_expansion << " "
+            << result.critical_padding << " "
+            << result.critical_padding_ratio << " "
+            << result.bg_imbalance << " "
+            << result.total_padding_steps << " "
+            << result.hidden_padding_steps << " "
+            << result.fragmentation << " "
+            << result.memory_pressure << " "
+            << result.imbalance_pressure << " "
+            << result.exposure_factor << " "
+            << result.exposed_hidden_padding << " "
+            << result.effective_padding_steps << " "
+            << result.bga_raw_accumulate_cycle << " "
+            << result.bga_hidden_accumulate_cycle << " "
+            << result.bga_regularity_score << " "
+            << result.bga_reuse_score << " "
+            << result.bga_padding_guard << " "
+            << result.bga_overlap_factor << "\n";
+    }
+
+    out << "gmean_target_speedup: "
+        << geomeanSpeedup(results,
+                          [](const StructuralModelResult& result) {
+                              return result.target_speedup;
+                          })
+        << "\n";
+    out << "gmean_model_speedup: "
+        << geomeanSpeedup(results,
+                          [](const StructuralModelResult& result) {
+                              return result.model_speedup;
+                          })
+        << "\n";
+    out << "gmean_speedup_error_ratio: "
+        << geomeanSpeedup(results,
+                          [](const StructuralModelResult& result) {
+                              return result.speedup_error_ratio;
+                          })
+        << "\n";
+}
+
+void writeStructuralDiagnostics(int structural_variant,
+                                const vector<StructuralModelResult>& results)
+{
+    string path = structuralDiagnosticPath(structural_variant);
+    ofstream out(path);
+    if (!out)
+        throw runtime_error("failed to open " + path);
+
+    out << "# SparsePIM DRAF+BGA phase diagnostics\n";
+    out << "model_variant: " << structuralVariantName(structural_variant) << "\n";
+    out << "source_results: " << structuralResultPath(structural_variant) << "\n";
+    out << "notes: alternative totals are diagnostic only, not adopted models\n";
+    out << "columns: matrix target_speedup model_speedup model_over_target "
+           "target_pim_ms model_ms excess_ms setup_pct fetch_pct compute_pct "
+           "padding_pct bga_pct readback_pct final_pct mode_cycle "
+           "compute_bga_overlap_ms compute_bga_overlap_speedup "
+           "compute_bga_overlap_over_target aggressive_overlap_ms "
+           "aggressive_overlap_speedup aggressive_overlap_over_target "
+           "wide_final_ms wide_final_speedup wide_final_over_target "
+           "compute_bga_overlap_wide_final_ms compute_bga_overlap_wide_final_speedup "
+           "compute_bga_overlap_wide_final_over_target\n";
+
+    for (const StructuralModelResult& result : results)
+    {
+        uint64_t known_cycle = result.setup_cycle + result.draf_row_fetch_cycle +
+                               result.draf_compute_trigger_cycle + result.padding_cycle +
+                               result.bga_accumulate_cycle +
+                               result.bga_output_readback_cycle +
+                               result.final_reduce_cycle;
+        uint64_t mode_cycle =
+            result.total_cycle > known_cycle ? result.total_cycle - known_cycle : 0;
+        uint64_t compute_path_cycle =
+            result.draf_compute_trigger_cycle + result.padding_cycle;
+        uint64_t compute_bga_overlap_cycle =
+            result.setup_cycle + result.draf_row_fetch_cycle +
+            max(compute_path_cycle, result.bga_accumulate_cycle) +
+            result.bga_output_readback_cycle + result.final_reduce_cycle + mode_cycle;
+        uint64_t aggressive_overlap_cycle =
+            result.setup_cycle +
+            max(result.draf_row_fetch_cycle,
+                max(compute_path_cycle, result.bga_accumulate_cycle)) +
+            result.bga_output_readback_cycle + result.final_reduce_cycle + mode_cycle;
+        uint64_t wide_final_cycle = ceilDiv(result.final_reduce_cycle, 4);
+        uint64_t wide_final_total_cycle =
+            result.total_cycle - result.final_reduce_cycle + wide_final_cycle;
+        uint64_t overlap_wide_final_cycle =
+            compute_bga_overlap_cycle - result.final_reduce_cycle + wide_final_cycle;
+
+        double ms_per_cycle =
+            result.total_cycle == 0 ? 0.0 : result.model_ms / result.total_cycle;
+        auto cycleToMs = [ms_per_cycle](uint64_t cycle) {
+            return static_cast<double>(cycle) * ms_per_cycle;
+        };
+        auto speedupFromMs = [&result](double ms) {
+            return ms == 0.0 ? 0.0 : result.gpu_ms / ms;
+        };
+        auto overTarget = [&result](double speedup) {
+            return result.target_speedup == 0.0 ? 0.0 : speedup / result.target_speedup;
+        };
+        auto pct = [&result](uint64_t cycle) {
+            return result.total_cycle == 0
+                       ? 0.0
+                       : 100.0 * static_cast<double>(cycle) / result.total_cycle;
+        };
+
+        double compute_bga_overlap_ms = cycleToMs(compute_bga_overlap_cycle);
+        double aggressive_overlap_ms = cycleToMs(aggressive_overlap_cycle);
+        double wide_final_ms = cycleToMs(wide_final_total_cycle);
+        double overlap_wide_final_ms = cycleToMs(overlap_wide_final_cycle);
+        double compute_bga_overlap_speedup = speedupFromMs(compute_bga_overlap_ms);
+        double aggressive_overlap_speedup = speedupFromMs(aggressive_overlap_ms);
+        double wide_final_speedup = speedupFromMs(wide_final_ms);
+        double overlap_wide_final_speedup = speedupFromMs(overlap_wide_final_ms);
+
+        out << result.matrix << " "
+            << result.target_speedup << " "
+            << result.model_speedup << " "
+            << result.speedup_error_ratio << " "
+            << result.target_pim_ms << " "
+            << result.model_ms << " "
+            << (result.model_ms - result.target_pim_ms) << " "
+            << pct(result.setup_cycle) << " "
+            << pct(result.draf_row_fetch_cycle) << " "
+            << pct(result.draf_compute_trigger_cycle) << " "
+            << pct(result.padding_cycle) << " "
+            << pct(result.bga_accumulate_cycle) << " "
+            << pct(result.bga_output_readback_cycle) << " "
+            << pct(result.final_reduce_cycle) << " "
+            << mode_cycle << " "
+            << compute_bga_overlap_ms << " "
+            << compute_bga_overlap_speedup << " "
+            << overTarget(compute_bga_overlap_speedup) << " "
+            << aggressive_overlap_ms << " "
+            << aggressive_overlap_speedup << " "
+            << overTarget(aggressive_overlap_speedup) << " "
+            << wide_final_ms << " "
+            << wide_final_speedup << " "
+            << overTarget(wide_final_speedup) << " "
+            << overlap_wide_final_ms << " "
+            << overlap_wide_final_speedup << " "
+            << overTarget(overlap_wide_final_speedup) << "\n";
+    }
 }
 
 void addPhaseBarriers(shared_ptr<MultiChannelMemorySystem> mem, const vector<char>& active_channels)
@@ -684,6 +978,11 @@ double normalizeRatio(double value, double scale)
     return min(1.0, log(value) / log(scale));
 }
 
+double clamp01(double value)
+{
+    return min(1.0, max(0.0, value));
+}
+
 double jaccardOfSortedRows(vector<unsigned> lhs, vector<unsigned> rhs)
 {
     if (lhs.empty() && rhs.empty())
@@ -891,6 +1190,59 @@ DrafCriticalPathStats buildDrafCriticalPathStats(const DrafStats& draf)
     return stats;
 }
 
+DrafPaddingExposureStats buildDrafPaddingExposureStats(const DrafStats& draf,
+                                                       const ShapeStats& shape,
+                                                       const DrafCriticalPathStats& critical)
+{
+    DrafPaddingExposureStats stats;
+    stats.total_padding_steps =
+        static_cast<double>(draf.nze_padding) / static_cast<double>(kElementsPerBurst);
+    stats.critical_padding_steps = critical.critical_padding;
+    stats.hidden_padding_steps =
+        max(0.0, stats.total_padding_steps - stats.critical_padding_steps);
+    stats.fragmentation = max(shape.single_nnz_column_ratio, shape.low_nnz_column_ratio);
+    stats.memory_pressure = clamp01((draf.expansion_ratio - 1.0) / 4.0);
+    stats.imbalance_pressure = clamp01((critical.bg_imbalance - 1.0) / 3.0);
+    stats.exposure_factor =
+        clamp01(0.6 * stats.fragmentation + 0.3 * stats.memory_pressure +
+                0.1 * stats.imbalance_pressure);
+    stats.exposed_hidden_padding = stats.hidden_padding_steps * stats.exposure_factor;
+    stats.effective_padding_steps =
+        stats.critical_padding_steps + stats.exposed_hidden_padding;
+    return stats;
+}
+
+BgaOverlapStats buildBgaOverlapStats(uint64_t raw_bga_accumulate_cycle,
+                                     uint64_t compute_overlap_window,
+                                     const ShapeStats& shape,
+                                     const DrafPaddingExposureStats& exposure)
+{
+    BgaOverlapStats stats;
+    stats.raw_accumulate_cycle = raw_bga_accumulate_cycle;
+    stats.regularity_score =
+        clamp01(1.0 - max(exposure.fragmentation, exposure.memory_pressure));
+    stats.reuse_score = clamp01(shape.bga_reduction_ratio);
+    stats.padding_guard = clamp01(1.0 - exposure.exposure_factor);
+
+    /*
+     * V6 treats BGA accumulation as an internal pipeline that can be partially hidden by
+     * DRAF compute slots. The overlap is intentionally guarded by DRAF fragmentation and
+     * memory expansion, so padding-dominated workloads do not receive the same benefit as
+     * regular/high-reuse matrices.
+     */
+    stats.overlap_factor =
+        clamp01(0.10 + 0.60 * stats.regularity_score * stats.padding_guard +
+                0.30 * stats.regularity_score * stats.reuse_score);
+    uint64_t candidate_hidden_cycle = static_cast<uint64_t>(
+        floor(static_cast<double>(raw_bga_accumulate_cycle) * stats.overlap_factor));
+    stats.hidden_accumulate_cycle = min(candidate_hidden_cycle, compute_overlap_window);
+    stats.exposed_accumulate_cycle =
+        raw_bga_accumulate_cycle > stats.hidden_accumulate_cycle
+            ? raw_bga_accumulate_cycle - stats.hidden_accumulate_cycle
+            : 0;
+    return stats;
+}
+
 class ClusteredSpmvBenchFixture : public testing::Test
 {
   protected:
@@ -912,12 +1264,13 @@ class ClusteredSpmvBenchFixture : public testing::Test
     void runDrafBgaModel(const string& base, const string& input_name,
                          bool conservative_model = false, bool v2_model = false,
                          bool v21_model = false);
-    void runDrafBgaStructuralModel(const string& base, const string& input_name,
-                                   const string& matrix_name,
-                                   bool critical_padding_model = false);
+    StructuralModelResult runDrafBgaStructuralModel(const string& base,
+                                                    const string& input_name,
+                                                    const string& matrix_name,
+                                                    int structural_variant = 3);
     void runGuidedKmeansDrafBgaSuite(bool conservative_model = false,
                                      bool v2_model = false, bool v21_model = false);
-    void runGuidedKmeansDrafBgaStructuralSuite(bool critical_padding_model = false);
+    void runGuidedKmeansDrafBgaStructuralSuite(int structural_variant = 3);
 };
 }  // namespace
 
@@ -1686,10 +2039,9 @@ void ClusteredSpmvBenchFixture::runGuidedKmeansDrafBgaSuite(bool conservative_mo
     }
 }
 
-void ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(const string& base,
-                                                          const string& input_name,
-                                                          const string& matrix_name,
-                                                          bool critical_padding_model)
+StructuralModelResult ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(
+    const string& base, const string& input_name, const string& matrix_name,
+    int structural_variant)
 {
     SpmvInputs inputs = loadSparsePIMInputs(base + "reordered_matrix.txt",
                                             base + "column_permutation.txt", base + "clusters.txt");
@@ -1699,6 +2051,11 @@ void ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(const string& base,
     BgaStats bga = buildBgaStats(inputs, kDefaultV2BgaAccCapacity);
     ShapeStats shape = buildShapeStats(inputs, draf, bga);
     DrafCriticalPathStats critical = buildDrafCriticalPathStats(draf);
+    DrafPaddingExposureStats exposure =
+        buildDrafPaddingExposureStats(draf, shape, critical);
+    bool critical_padding_model = structural_variant >= 4;
+    bool exposure_padding_model = structural_variant >= 5;
+    bool bga_overlap_model = structural_variant >= 6;
 
     BurstType null_bst;
     vector<PIMCmd> mac_cmds{
@@ -1708,10 +2065,16 @@ void ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(const string& base,
         PIMCmd(PIMCmdType::EXIT, 0),
     };
 
-    cout << ">>DRAF+BGA-aware SpMV "
-         << (critical_padding_model ? "V4 Critical-Path Structural Model"
-                                    : "V3 Structural Model")
-         << endl;
+    cout << ">>DRAF+BGA-aware SpMV ";
+    if (bga_overlap_model)
+        cout << "V6 BGA-Overlap Structural Model";
+    else if (exposure_padding_model)
+        cout << "V5 Exposure Structural Model";
+    else if (critical_padding_model)
+        cout << "V4 Critical-Path Structural Model";
+    else
+        cout << "V3 Structural Model";
+    cout << endl;
     cout << "  input: " << input_name << endl;
     cout << "  matrix: " << matrix_name << endl;
     cout << "  note: structural model; target speedup is used only for reporting" << endl;
@@ -1732,6 +2095,14 @@ void ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(const string& base,
     cout << "  group_steps_mean: " << critical.group_steps_mean << endl;
     cout << "  group_steps_max: " << critical.group_steps_max << endl;
     cout << "  bg_imbalance: " << critical.bg_imbalance << endl;
+    cout << "  total_padding_steps: " << exposure.total_padding_steps << endl;
+    cout << "  hidden_padding_steps: " << exposure.hidden_padding_steps << endl;
+    cout << "  fragmentation: " << exposure.fragmentation << endl;
+    cout << "  memory_pressure: " << exposure.memory_pressure << endl;
+    cout << "  imbalance_pressure: " << exposure.imbalance_pressure << endl;
+    cout << "  exposure_factor: " << exposure.exposure_factor << endl;
+    cout << "  exposed_hidden_padding: " << exposure.exposed_hidden_padding << endl;
+    cout << "  effective_padding_steps: " << exposure.effective_padding_steps << endl;
     cout << "  single_nnz_column_ratio: " << shape.single_nnz_column_ratio << endl;
     cout << "  low_nnz_column_ratio: " << shape.low_nnz_column_ratio << endl;
     cout << "  draf_padding_pressure: " << shape.draf_padding_pressure << endl;
@@ -1778,7 +2149,7 @@ void ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(const string& base,
 
     uint64_t bga_capacity_flushes =
         max(bga.max_estimated_flushes_per_group, bga.max_stream_capacity_flushes_per_group);
-    uint64_t bga_accumulate_cycle =
+    uint64_t raw_bga_accumulate_cycle =
         bga.max_bacc_instructions_per_group + kConservativeBgaFlushPenalty * bga_capacity_flushes;
 
     kernel_->changePIMMode(dramMode::HAB_PIM, dramMode::HAB);
@@ -1809,10 +2180,26 @@ void ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(const string& base,
      * bank-group critical path, so regular padding that is hidden inside shorter banks does not
      * receive the same cost as useful nonzero work.
      */
-    uint64_t padded_zero_compute_cycle =
-        critical_padding_model
-            ? static_cast<uint64_t>(ceil(critical.critical_padding))
-            : ceilDiv(draf.nze_padding, kElementsPerBurst);
+    uint64_t padded_zero_compute_cycle = 0;
+    if (exposure_padding_model)
+    {
+        padded_zero_compute_cycle =
+            static_cast<uint64_t>(ceil(exposure.effective_padding_steps));
+    }
+    else if (critical_padding_model)
+    {
+        padded_zero_compute_cycle =
+            static_cast<uint64_t>(ceil(critical.critical_padding));
+    }
+    else
+    {
+        padded_zero_compute_cycle = ceilDiv(draf.nze_padding, kElementsPerBurst);
+    }
+    uint64_t compute_overlap_window = draf_compute_trigger_cycle + padded_zero_compute_cycle;
+    BgaOverlapStats bga_overlap =
+        buildBgaOverlapStats(raw_bga_accumulate_cycle, compute_overlap_window, shape, exposure);
+    uint64_t bga_accumulate_cycle =
+        bga_overlap_model ? bga_overlap.exposed_accumulate_cycle : raw_bga_accumulate_cycle;
     uint64_t final_reduce_cycle = ceilDiv(bga.host_reduce_ops_after_bga,
                                           kConservativeHostReduceWidth);
     uint64_t v3_total_cycle =
@@ -1827,18 +2214,65 @@ void ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(const string& base,
     double target_speedup = paperTargetSpeedup(matrix_name);
     double target_pim_ms =
         target_speedup == 0.0 ? 0.0 : gpu_ms / target_speedup;
+    StructuralModelResult result;
+    result.matrix = matrix_name;
+    result.gpu_ms = gpu_ms;
+    result.target_speedup = target_speedup;
+    result.target_pim_ms = target_pim_ms;
+    result.model_ms = v3_total_ms;
+    result.model_speedup = v3_speedup;
+    result.speedup_error_ratio =
+        target_speedup == 0.0 ? 0.0 : v3_speedup / target_speedup;
+    result.total_cycle = v3_total_cycle;
+    result.setup_cycle = setup_cycle;
+    result.draf_row_fetch_cycle = draf_row_fetch_cycle;
+    result.draf_compute_trigger_cycle = draf_compute_trigger_cycle;
+    result.padding_cycle = padded_zero_compute_cycle;
+    result.bga_accumulate_cycle = bga_accumulate_cycle;
+    result.bga_output_readback_cycle = bga_output_readback_cycle;
+    result.final_reduce_cycle = final_reduce_cycle;
+    result.draf_padding_ratio = draf.nze_padding_ratio;
+    result.draf_memory_expansion = draf.expansion_ratio;
+    result.critical_padding = critical.critical_padding;
+    result.critical_padding_ratio = critical.critical_padding_ratio;
+    result.bg_imbalance = critical.bg_imbalance;
+    result.total_padding_steps = exposure.total_padding_steps;
+    result.hidden_padding_steps = exposure.hidden_padding_steps;
+    result.fragmentation = exposure.fragmentation;
+    result.memory_pressure = exposure.memory_pressure;
+    result.imbalance_pressure = exposure.imbalance_pressure;
+    result.exposure_factor = exposure.exposure_factor;
+    result.exposed_hidden_padding = exposure.exposed_hidden_padding;
+    result.effective_padding_steps = exposure.effective_padding_steps;
+    result.bga_raw_accumulate_cycle = raw_bga_accumulate_cycle;
+    result.bga_hidden_accumulate_cycle = bga_overlap.hidden_accumulate_cycle;
+    result.bga_regularity_score = bga_overlap.regularity_score;
+    result.bga_reuse_score = bga_overlap.reuse_score;
+    result.bga_padding_guard = bga_overlap.padding_guard;
+    result.bga_overlap_factor = bga_overlap.overlap_factor;
 
     cout << "  latency_scope: setup + DRAF access + "
-         << (critical_padding_model ? "critical-path padding" : "padded zero work")
+         << (exposure_padding_model
+                 ? "exposed hidden padding"
+                 : (critical_padding_model ? "critical-path padding" : "padded zero work"))
          << " + BGA + result readback" << endl;
     cout << "> setup_cycle: " << setup_cycle << endl;
     cout << "> draf_row_fetch_cycle: " << draf_row_fetch_cycle << endl;
     cout << "> draf_compute_trigger_cycle: " << draf_compute_trigger_cycle << endl;
     cout << "> "
-         << (critical_padding_model ? "critical_padding_cycle: "
-                                    : "padded_zero_compute_cycle: ")
+         << (exposure_padding_model
+                 ? "exposed_padding_cycle: "
+                 : (critical_padding_model ? "critical_padding_cycle: "
+                                           : "padded_zero_compute_cycle: "))
          << padded_zero_compute_cycle;
-    if (critical_padding_model)
+    if (exposure_padding_model)
+    {
+        cout << " effective_padding_steps=" << exposure.effective_padding_steps
+             << " critical_padding=" << critical.critical_padding
+             << " hidden_padding_steps=" << exposure.hidden_padding_steps
+             << " exposure_factor=" << exposure.exposure_factor;
+    }
+    else if (critical_padding_model)
     {
         cout << " critical_padding=" << critical.critical_padding
              << " ideal_steps=" << critical.ideal_steps
@@ -1851,36 +2285,60 @@ void ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(const string& base,
     }
     cout << endl;
     cout << "> bga_accumulate_cycle: " << bga_accumulate_cycle
+         << " raw_bga_accumulate_cycle=" << raw_bga_accumulate_cycle
+         << " hidden_bga_accumulate_cycle=" << bga_overlap.hidden_accumulate_cycle
+         << " bga_overlap_factor=" << bga_overlap.overlap_factor
+         << " bga_regularity_score=" << bga_overlap.regularity_score
+         << " bga_reuse_score=" << bga_overlap.reuse_score
+         << " bga_padding_guard=" << bga_overlap.padding_guard
          << " max_bacc_per_group=" << bga.max_bacc_instructions_per_group
          << " selected_flushes_per_group=" << bga_capacity_flushes
          << " flush_penalty=" << kConservativeBgaFlushPenalty << endl;
     cout << "> bga_output_readback_cycle: " << bga_output_readback_cycle << endl;
     cout << "> final_reduce_cycle: " << final_reduce_cycle << endl;
     cout << "> "
-         << (critical_padding_model ? "v4_structural_cycle: " : "v3_structural_cycle: ")
+         << (exposure_padding_model
+                 ? (bga_overlap_model ? "v6_structural_cycle: "
+                                      : "v5_structural_cycle: ")
+                 : (critical_padding_model ? "v4_structural_cycle: "
+                                           : "v3_structural_cycle: "))
          << v3_total_cycle
          << " ms=" << v3_total_ms << endl;
     cout << "> gpu_baseline_ms: " << gpu_ms << endl;
     cout << "> paper_target_speedup: " << target_speedup
          << " target_pim_ms=" << target_pim_ms << endl;
     cout << "> "
-         << (critical_padding_model ? "v4_structural_speedup: "
-                                    : "v3_structural_speedup: ")
+         << (exposure_padding_model
+                 ? (bga_overlap_model ? "v6_structural_speedup: "
+                                      : "v5_structural_speedup: ")
+                 : (critical_padding_model ? "v4_structural_speedup: "
+                                           : "v3_structural_speedup: "))
          << v3_speedup
          << " speedup_error_ratio="
          << (target_speedup == 0.0 ? 0.0 : v3_speedup / target_speedup) << endl;
-    cout << (critical_padding_model ? "V4_RESULT_CSV," : "V3_RESULT_CSV,")
+    cout << (exposure_padding_model
+                 ? (bga_overlap_model ? "V6_RESULT_CSV," : "V5_RESULT_CSV,")
+                 : (critical_padding_model ? "V4_RESULT_CSV," : "V3_RESULT_CSV,"))
          << matrix_name << "," << gpu_ms << "," << target_speedup << "," << target_pim_ms
          << "," << v3_total_ms << "," << v3_speedup << ","
          << (target_speedup == 0.0 ? 0.0 : v3_speedup / target_speedup) << ","
          << draf.nze_padding << "," << draf.nze_padding_ratio << ","
          << draf.expansion_ratio << "," << critical.critical_padding << ","
          << critical.critical_padding_ratio << "," << critical.group_steps_mean << ","
-         << critical.group_steps_max << "," << critical.bg_imbalance << endl;
+         << critical.group_steps_max << "," << critical.bg_imbalance << ","
+         << exposure.total_padding_steps << "," << exposure.hidden_padding_steps << ","
+         << exposure.fragmentation << "," << exposure.memory_pressure << ","
+         << exposure.imbalance_pressure << "," << exposure.exposure_factor << ","
+         << exposure.exposed_hidden_padding << "," << exposure.effective_padding_steps
+         << "," << raw_bga_accumulate_cycle << "," << bga_overlap.hidden_accumulate_cycle
+         << "," << bga_overlap.regularity_score << "," << bga_overlap.reuse_score
+         << "," << bga_overlap.padding_guard << "," << bga_overlap.overlap_factor
+         << endl;
+    return result;
 }
 
 void ClusteredSpmvBenchFixture::runGuidedKmeansDrafBgaStructuralSuite(
-    bool critical_padding_model)
+    int structural_variant)
 {
     const vector<SpmvDataset> datasets{
         {"ASIC_100k", "../SparsePIM/guided_kmeans_coo_results/ASIC_100k/"},
@@ -1902,14 +2360,21 @@ void ClusteredSpmvBenchFixture::runGuidedKmeansDrafBgaStructuralSuite(
     };
 
     string only_matrix = envString("SPMV_BENCH_MATRIX");
-    cout << ">>Guided K-means COO DRAF+BGA "
-         << (critical_padding_model ? "V4 critical-path structural suite"
-                                    : "V3 structural suite")
-         << endl;
+    cout << ">>Guided K-means COO DRAF+BGA ";
+    if (structural_variant >= 6)
+        cout << "V6 BGA-overlap structural suite";
+    else if (structural_variant >= 5)
+        cout << "V5 exposure structural suite";
+    else if (structural_variant >= 4)
+        cout << "V4 critical-path structural suite";
+    else
+        cout << "V3 structural suite";
+    cout << endl;
     if (!only_matrix.empty())
         cout << "  SPMV_BENCH_MATRIX: " << only_matrix << endl;
 
     bool matched = false;
+    vector<StructuralModelResult> results;
     for (const SpmvDataset& dataset : datasets)
     {
         if (!only_matrix.empty() && dataset.name != only_matrix)
@@ -1917,14 +2382,25 @@ void ClusteredSpmvBenchFixture::runGuidedKmeansDrafBgaStructuralSuite(
 
         matched = true;
         resetPIMKernel();
-        runDrafBgaStructuralModel(dataset.base,
-                                  "SparsePIM/guided_kmeans_coo_results/" + dataset.name,
-                                  dataset.name, critical_padding_model);
+        StructuralModelResult result =
+            runDrafBgaStructuralModel(dataset.base,
+                                      "SparsePIM/guided_kmeans_coo_results/" + dataset.name,
+                                      dataset.name, structural_variant);
+        results.push_back(result);
     }
 
     if (!only_matrix.empty())
     {
         ASSERT_TRUE(matched) << "unknown SPMV_BENCH_MATRIX=" << only_matrix;
+    }
+    else
+    {
+        writeStructuralResults(structural_variant, results);
+        writeStructuralDiagnostics(structural_variant, results);
+        cout << "  wrote_structural_results: "
+             << structuralResultPath(structural_variant) << endl;
+        cout << "  wrote_phase_diagnostics: "
+             << structuralDiagnosticPath(structural_variant) << endl;
     }
 }
 
@@ -1983,10 +2459,20 @@ TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v21_conse
 
 TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v3_structural_model)
 {
-    runGuidedKmeansDrafBgaStructuralSuite();
+    runGuidedKmeansDrafBgaStructuralSuite(3);
 }
 
 TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v4_structural_model)
 {
-    runGuidedKmeansDrafBgaStructuralSuite(true);
+    runGuidedKmeansDrafBgaStructuralSuite(4);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v5_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(5);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v6_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(6);
 }
