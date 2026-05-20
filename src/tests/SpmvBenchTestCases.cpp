@@ -156,6 +156,24 @@ struct ShapeStats
     double draf_padding_pressure = 0.0;
 };
 
+struct PaperTarget
+{
+    string workload;
+    string matrix;
+    double speedup = 0.0;
+};
+
+struct DrafCriticalPathStats
+{
+    double ideal_steps = 0.0;
+    double actual_steps = 0.0;
+    double critical_padding = 0.0;
+    double critical_padding_ratio = 0.0;
+    double group_steps_mean = 0.0;
+    double group_steps_max = 0.0;
+    double bg_imbalance = 0.0;
+};
+
 uint64_t ceilDiv(uint64_t value, uint64_t divisor)
 {
     return (value + divisor - 1) / divisor;
@@ -229,6 +247,58 @@ V2Params loadV2Params()
     if (params.bga_acc_capacity == 0)
         params.bga_acc_capacity = 1;
     return params;
+}
+
+double paperTargetSpeedup(const string& matrix)
+{
+    static const vector<PaperTarget> targets{
+        {"w1", "cant", 2.2},
+        {"w2", "crankseg_2", 3.0},
+        {"w3", "lhr71", 1.8},
+        {"w4", "pdb1HYS", 5.4},
+        {"w5", "rma10", 2.3},
+        {"w6", "soc-sign-epinions", 1.2},
+        {"w7", "Stanford", 1.3},
+        {"w8", "bcsstk32", 2.0},
+        {"w9", "consph", 2.3},
+        {"w10", "ct20stif", 2.1},
+        {"w11", "ohne2", 3.2},
+        {"w12", "pwtk", 3.6},
+        {"w13", "shipsec1", 2.1},
+        {"w14", "ASIC_100k", 1.4},
+        {"w15", "xenon2", 5.6},
+        {"w16", "webbase-1M", 0.7},
+    };
+    for (const PaperTarget& target : targets)
+    {
+        if (target.matrix == matrix)
+            return target.speedup;
+    }
+    return 0.0;
+}
+
+double gpuBaselineMs(const string& matrix)
+{
+    static const unordered_map<string, double> baselines{
+        {"ASIC_100k", 0.138408},
+        {"Stanford", 0.350585},
+        {"bcsstk32", 0.099581},
+        {"cant", 0.129579},
+        {"consph", 0.170734},
+        {"crankseg_2", 0.222282},
+        {"ct20stif", 0.106881},
+        {"lhr71", 0.117986},
+        {"ohne2", 0.279932},
+        {"pdb1HYS", 0.103166},
+        {"pwtk", 0.361986},
+        {"rma10", 0.102458},
+        {"shipsec1", 0.208423},
+        {"soc-sign-epinions", 0.176878},
+        {"webbase-1M", 0.867231},
+        {"xenon2", 0.234144},
+    };
+    auto it = baselines.find(matrix);
+    return it == baselines.end() ? 0.0 : it->second;
 }
 
 void addPhaseBarriers(shared_ptr<MultiChannelMemorySystem> mem, const vector<char>& active_channels)
@@ -785,6 +855,42 @@ ShapeStats buildShapeStats(const SpmvInputs& inputs, const DrafStats& draf, cons
     return stats;
 }
 
+DrafCriticalPathStats buildDrafCriticalPathStats(const DrafStats& draf)
+{
+    DrafCriticalPathStats stats;
+    constexpr double kLogicalBanksPerBankGroup = 2.0;
+    vector<uint64_t> actual_group_steps;
+
+    for (const DrafClusterInfo& cluster : draf.clusters)
+    {
+        if (cluster.column_groups == 0)
+            continue;
+
+        double actual_group_step =
+            ceil(static_cast<double>(cluster.column_groups) / kLogicalBanksPerBankGroup);
+        double ideal_column_groups =
+            static_cast<double>(cluster.nnz) / static_cast<double>(kDrafNzesPerColumnGroup);
+        double ideal_group_step = ideal_column_groups / kLogicalBanksPerBankGroup;
+
+        stats.actual_steps += actual_group_step;
+        stats.ideal_steps += ideal_group_step;
+        stats.critical_padding += max(0.0, actual_group_step - ideal_group_step);
+        actual_group_steps.push_back(static_cast<uint64_t>(ceil(actual_group_step)));
+    }
+
+    stats.critical_padding_ratio =
+        stats.ideal_steps == 0.0 ? 0.0 : stats.critical_padding / stats.ideal_steps;
+    stats.group_steps_mean = meanOf(actual_group_steps);
+    stats.group_steps_max = actual_group_steps.empty()
+                                ? 0.0
+                                : static_cast<double>(
+                                      *max_element(actual_group_steps.begin(),
+                                                   actual_group_steps.end()));
+    stats.bg_imbalance =
+        stats.group_steps_mean == 0.0 ? 0.0 : stats.group_steps_max / stats.group_steps_mean;
+    return stats;
+}
+
 class ClusteredSpmvBenchFixture : public testing::Test
 {
   protected:
@@ -806,8 +912,12 @@ class ClusteredSpmvBenchFixture : public testing::Test
     void runDrafBgaModel(const string& base, const string& input_name,
                          bool conservative_model = false, bool v2_model = false,
                          bool v21_model = false);
+    void runDrafBgaStructuralModel(const string& base, const string& input_name,
+                                   const string& matrix_name,
+                                   bool critical_padding_model = false);
     void runGuidedKmeansDrafBgaSuite(bool conservative_model = false,
                                      bool v2_model = false, bool v21_model = false);
+    void runGuidedKmeansDrafBgaStructuralSuite(bool critical_padding_model = false);
 };
 }  // namespace
 
@@ -1576,6 +1686,248 @@ void ClusteredSpmvBenchFixture::runGuidedKmeansDrafBgaSuite(bool conservative_mo
     }
 }
 
+void ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(const string& base,
+                                                          const string& input_name,
+                                                          const string& matrix_name,
+                                                          bool critical_padding_model)
+{
+    SpmvInputs inputs = loadSparsePIMInputs(base + "reordered_matrix.txt",
+                                            base + "column_permutation.txt", base + "clusters.txt");
+    uint64_t max_clusters = envLimit("SPMV_BENCH_MAX_CLUSTERS");
+    applyClusterLimit(inputs, max_clusters);
+    DrafStats draf = buildDrafStats(inputs);
+    BgaStats bga = buildBgaStats(inputs, kDefaultV2BgaAccCapacity);
+    ShapeStats shape = buildShapeStats(inputs, draf, bga);
+    DrafCriticalPathStats critical = buildDrafCriticalPathStats(draf);
+
+    BurstType null_bst;
+    vector<PIMCmd> mac_cmds{
+        PIMCmd(PIMCmdType::MAC, PIMOpdType::GRF_B, PIMOpdType::GRF_A, PIMOpdType::EVEN_BANK, 1),
+        PIMCmd(PIMCmdType::MAC, PIMOpdType::GRF_B, PIMOpdType::GRF_A, PIMOpdType::ODD_BANK, 1),
+        PIMCmd(PIMCmdType::NOP, 7),
+        PIMCmd(PIMCmdType::EXIT, 0),
+    };
+
+    cout << ">>DRAF+BGA-aware SpMV "
+         << (critical_padding_model ? "V4 Critical-Path Structural Model"
+                                    : "V3 Structural Model")
+         << endl;
+    cout << "  input: " << input_name << endl;
+    cout << "  matrix: " << matrix_name << endl;
+    cout << "  note: structural model; target speedup is used only for reporting" << endl;
+    cout << "  rows: " << inputs.n_rows << endl;
+    cout << "  cols: " << inputs.n_cols << endl;
+    cout << "  nnz: " << draf.nnz << endl;
+    cout << "  clusters: " << inputs.clusters.size() << endl;
+    cout << "  draf_column_groups: " << draf.column_groups << endl;
+    cout << "  draf_rows: " << draf.draf_rows << endl;
+    cout << "  draf_packed_nnz_capacity: " << draf.packed_nnz_capacity << endl;
+    cout << "  draf_nze_padding: " << draf.nze_padding << endl;
+    cout << "  draf_padding_ratio: " << draf.nze_padding_ratio << endl;
+    cout << "  draf_expansion_ratio: " << draf.expansion_ratio << endl;
+    cout << "  draf_nze_padding_ratio: " << draf.nze_padding_ratio << endl;
+    cout << "  draf_memory_expansion: " << draf.expansion_ratio << endl;
+    cout << "  critical_padding: " << critical.critical_padding << endl;
+    cout << "  critical_padding_ratio: " << critical.critical_padding_ratio << endl;
+    cout << "  group_steps_mean: " << critical.group_steps_mean << endl;
+    cout << "  group_steps_max: " << critical.group_steps_max << endl;
+    cout << "  bg_imbalance: " << critical.bg_imbalance << endl;
+    cout << "  single_nnz_column_ratio: " << shape.single_nnz_column_ratio << endl;
+    cout << "  low_nnz_column_ratio: " << shape.low_nnz_column_ratio << endl;
+    cout << "  draf_padding_pressure: " << shape.draf_padding_pressure << endl;
+    cout << "  bga_reduction_ratio: " << shape.bga_reduction_ratio << endl;
+
+    kernel_->configurePIMControl();
+    kernel_->parkIn();
+    kernel_->changePIMMode(dramMode::SB, dramMode::HAB);
+    kernel_->programCrf(mac_cmds);
+    uint64_t setup_cycle = drain(*kernel_);
+
+    vector<char> draf_channels(kernel_->num_pim_chans_, 0);
+    uint64_t global_draf_row = 0;
+    for (const DrafClusterInfo& cluster : draf.clusters)
+    {
+        unsigned chan = cluster.id / 4;
+        draf_channels[chan] = cluster.draf_rows > 0 ? 1 : draf_channels[chan];
+        for (uint64_t i = 0; i < cluster.draf_rows; ++i, ++global_draf_row)
+        {
+            unsigned row = kMacBaseRow + (global_draf_row / 32);
+            unsigned col = global_draf_row % 32;
+            addTx(mem_, *kernel_->pim_addr_mgr_, false, chan, 0, 0, row, col, &null_bst);
+        }
+    }
+    addPhaseBarriers(mem_, draf_channels);
+    uint64_t draf_row_fetch_cycle = drain(*kernel_);
+
+    kernel_->changePIMMode(dramMode::HAB, dramMode::HAB_PIM);
+    uint64_t pim_enable_cycle = drain(*kernel_);
+
+    global_draf_row = 0;
+    for (const DrafClusterInfo& cluster : draf.clusters)
+    {
+        unsigned chan = cluster.id / 4;
+        for (uint64_t i = 0; i < cluster.draf_rows; ++i, ++global_draf_row)
+        {
+            unsigned row = kMacBaseRow + (global_draf_row / 32);
+            unsigned col = global_draf_row % 32;
+            addTx(mem_, *kernel_->pim_addr_mgr_, false, chan, 0, i % 2, row, col, &null_bst);
+        }
+    }
+    addPhaseBarriers(mem_, draf_channels);
+    uint64_t draf_compute_trigger_cycle = drain(*kernel_);
+
+    uint64_t bga_capacity_flushes =
+        max(bga.max_estimated_flushes_per_group, bga.max_stream_capacity_flushes_per_group);
+    uint64_t bga_accumulate_cycle =
+        bga.max_bacc_instructions_per_group + kConservativeBgaFlushPenalty * bga_capacity_flushes;
+
+    kernel_->changePIMMode(dramMode::HAB_PIM, dramMode::HAB);
+    uint64_t pim_disable_cycle = drain(*kernel_);
+    kernel_->changePIMMode(dramMode::HAB, dramMode::SB);
+    uint64_t pim_to_sb_cycle = drain(*kernel_);
+
+    vector<char> bga_channels(kernel_->num_pim_chans_, 0);
+    for (const BgaGroupInfo& group : bga.groups)
+        bga_channels[group.channel] = 1;
+    for (size_t group_idx = 0; group_idx < bga.groups.size(); ++group_idx)
+    {
+        const BgaGroupInfo& group = bga.groups[group_idx];
+        uint64_t readback_tx = ceilDiv(group.partials_after, kElementsPerBurst);
+        for (uint64_t i = 0; i < readback_tx; ++i)
+        {
+            unsigned row = kResultReadBaseRow + static_cast<unsigned>(group_idx * 16 + (i / 32));
+            unsigned col = i % 32;
+            addTx(mem_, *kernel_->pim_addr_mgr_, false, group.channel, 0, 0, row, col,
+                  &null_bst);
+        }
+    }
+    addPhaseBarriers(mem_, bga_channels);
+    uint64_t bga_output_readback_cycle = drain(*kernel_);
+
+    /*
+     * V3 charges all padded NZE slots. V4 charges only the padding exposed on the synchronous
+     * bank-group critical path, so regular padding that is hidden inside shorter banks does not
+     * receive the same cost as useful nonzero work.
+     */
+    uint64_t padded_zero_compute_cycle =
+        critical_padding_model
+            ? static_cast<uint64_t>(ceil(critical.critical_padding))
+            : ceilDiv(draf.nze_padding, kElementsPerBurst);
+    uint64_t final_reduce_cycle = ceilDiv(bga.host_reduce_ops_after_bga,
+                                          kConservativeHostReduceWidth);
+    uint64_t v3_total_cycle =
+        setup_cycle + draf_row_fetch_cycle + pim_enable_cycle + draf_compute_trigger_cycle +
+        padded_zero_compute_cycle + bga_accumulate_cycle + pim_disable_cycle + pim_to_sb_cycle +
+        bga_output_readback_cycle + final_reduce_cycle;
+
+    double tck_ns = getConfigParam(FLOAT, "tCK");
+    double v3_total_ms = v3_total_cycle * tck_ns / 1000000.0;
+    double gpu_ms = gpuBaselineMs(matrix_name);
+    double v3_speedup = v3_total_ms == 0.0 ? 0.0 : gpu_ms / v3_total_ms;
+    double target_speedup = paperTargetSpeedup(matrix_name);
+    double target_pim_ms =
+        target_speedup == 0.0 ? 0.0 : gpu_ms / target_speedup;
+
+    cout << "  latency_scope: setup + DRAF access + "
+         << (critical_padding_model ? "critical-path padding" : "padded zero work")
+         << " + BGA + result readback" << endl;
+    cout << "> setup_cycle: " << setup_cycle << endl;
+    cout << "> draf_row_fetch_cycle: " << draf_row_fetch_cycle << endl;
+    cout << "> draf_compute_trigger_cycle: " << draf_compute_trigger_cycle << endl;
+    cout << "> "
+         << (critical_padding_model ? "critical_padding_cycle: "
+                                    : "padded_zero_compute_cycle: ")
+         << padded_zero_compute_cycle;
+    if (critical_padding_model)
+    {
+        cout << " critical_padding=" << critical.critical_padding
+             << " ideal_steps=" << critical.ideal_steps
+             << " actual_steps=" << critical.actual_steps;
+    }
+    else
+    {
+        cout << " padded_slots=" << draf.nze_padding
+             << " simd_width=" << kElementsPerBurst;
+    }
+    cout << endl;
+    cout << "> bga_accumulate_cycle: " << bga_accumulate_cycle
+         << " max_bacc_per_group=" << bga.max_bacc_instructions_per_group
+         << " selected_flushes_per_group=" << bga_capacity_flushes
+         << " flush_penalty=" << kConservativeBgaFlushPenalty << endl;
+    cout << "> bga_output_readback_cycle: " << bga_output_readback_cycle << endl;
+    cout << "> final_reduce_cycle: " << final_reduce_cycle << endl;
+    cout << "> "
+         << (critical_padding_model ? "v4_structural_cycle: " : "v3_structural_cycle: ")
+         << v3_total_cycle
+         << " ms=" << v3_total_ms << endl;
+    cout << "> gpu_baseline_ms: " << gpu_ms << endl;
+    cout << "> paper_target_speedup: " << target_speedup
+         << " target_pim_ms=" << target_pim_ms << endl;
+    cout << "> "
+         << (critical_padding_model ? "v4_structural_speedup: "
+                                    : "v3_structural_speedup: ")
+         << v3_speedup
+         << " speedup_error_ratio="
+         << (target_speedup == 0.0 ? 0.0 : v3_speedup / target_speedup) << endl;
+    cout << (critical_padding_model ? "V4_RESULT_CSV," : "V3_RESULT_CSV,")
+         << matrix_name << "," << gpu_ms << "," << target_speedup << "," << target_pim_ms
+         << "," << v3_total_ms << "," << v3_speedup << ","
+         << (target_speedup == 0.0 ? 0.0 : v3_speedup / target_speedup) << ","
+         << draf.nze_padding << "," << draf.nze_padding_ratio << ","
+         << draf.expansion_ratio << "," << critical.critical_padding << ","
+         << critical.critical_padding_ratio << "," << critical.group_steps_mean << ","
+         << critical.group_steps_max << "," << critical.bg_imbalance << endl;
+}
+
+void ClusteredSpmvBenchFixture::runGuidedKmeansDrafBgaStructuralSuite(
+    bool critical_padding_model)
+{
+    const vector<SpmvDataset> datasets{
+        {"ASIC_100k", "../SparsePIM/guided_kmeans_coo_results/ASIC_100k/"},
+        {"Stanford", "../SparsePIM/guided_kmeans_coo_results/Stanford/"},
+        {"bcsstk32", "../SparsePIM/guided_kmeans_coo_results/bcsstk32/"},
+        {"cant", "../SparsePIM/guided_kmeans_coo_results/cant/"},
+        {"consph", "../SparsePIM/guided_kmeans_coo_results/consph/"},
+        {"crankseg_2", "../SparsePIM/guided_kmeans_coo_results/crankseg_2/"},
+        {"ct20stif", "../SparsePIM/guided_kmeans_coo_results/ct20stif/"},
+        {"lhr71", "../SparsePIM/guided_kmeans_coo_results/lhr71/"},
+        {"ohne2", "../SparsePIM/guided_kmeans_coo_results/ohne2/"},
+        {"pdb1HYS", "../SparsePIM/guided_kmeans_coo_results/pdb1HYS/"},
+        {"pwtk", "../SparsePIM/guided_kmeans_coo_results/pwtk/"},
+        {"rma10", "../SparsePIM/guided_kmeans_coo_results/rma10/"},
+        {"shipsec1", "../SparsePIM/guided_kmeans_coo_results/shipsec1/"},
+        {"soc-sign-epinions", "../SparsePIM/guided_kmeans_coo_results/soc-sign-epinions/"},
+        {"webbase-1M", "../SparsePIM/guided_kmeans_coo_results/webbase-1M/"},
+        {"xenon2", "../SparsePIM/guided_kmeans_coo_results/xenon2/"},
+    };
+
+    string only_matrix = envString("SPMV_BENCH_MATRIX");
+    cout << ">>Guided K-means COO DRAF+BGA "
+         << (critical_padding_model ? "V4 critical-path structural suite"
+                                    : "V3 structural suite")
+         << endl;
+    if (!only_matrix.empty())
+        cout << "  SPMV_BENCH_MATRIX: " << only_matrix << endl;
+
+    bool matched = false;
+    for (const SpmvDataset& dataset : datasets)
+    {
+        if (!only_matrix.empty() && dataset.name != only_matrix)
+            continue;
+
+        matched = true;
+        resetPIMKernel();
+        runDrafBgaStructuralModel(dataset.base,
+                                  "SparsePIM/guided_kmeans_coo_results/" + dataset.name,
+                                  dataset.name, critical_padding_model);
+    }
+
+    if (!only_matrix.empty())
+    {
+        ASSERT_TRUE(matched) << "unknown SPMV_BENCH_MATRIX=" << only_matrix;
+    }
+}
+
 TEST_F(ClusteredSpmvBenchFixture, sparsepim_cluster_cantcoo_draf_bga_model)
 {
     runDrafBgaModel("../SparsePIM/cluster_cantcoo/", "SparsePIM/cluster_cantcoo");
@@ -1627,4 +1979,14 @@ TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v21_model
 TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v21_conservative_model)
 {
     runGuidedKmeansDrafBgaSuite(true, true, true);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v3_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite();
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v4_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(true);
 }
