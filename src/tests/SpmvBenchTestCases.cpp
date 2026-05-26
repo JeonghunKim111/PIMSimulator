@@ -21,8 +21,14 @@
 #include "gtest/gtest.h"
 #include "tests/PIMCmdGen.h"
 #include "tests/PIMKernel.h"
+#include "tests/SpmvDrafBgaStructuralTypes.h"
+#include "tests/SpmvDrafBgaStructuralCommon.h"
+#include "tests/SpmvDrafBgaStructuralVariants.h"
+#include "tests/SpmvDrafBgaStructuralV14.h"
+#include "tests/SpmvDrafBgaStructuralV15.h"
 
 using namespace DRAMSim;
+using namespace spmv;
 using namespace std;
 
 namespace
@@ -31,96 +37,7 @@ constexpr unsigned kPimRegRow = 0x3fff;
 constexpr unsigned kMacBaseRow = 128;
 constexpr unsigned kResultBaseRow = 8192;
 constexpr unsigned kResultReadBaseRow = 12288;
-constexpr unsigned kElementsPerBurst = 16;
-constexpr unsigned kDrafNzesPerColumnGroup = 16;
-constexpr unsigned kDrafColumnGroupsPerRow = 7;
-constexpr unsigned kBgaEntriesPerBacc = 8;
-constexpr unsigned kBgaQueueDepth = 16;
-constexpr unsigned kBgaFlushThreshold = 9;
-constexpr unsigned kConservativeBgaFlushPenalty = 4;
 constexpr unsigned kConservativeHostReduceWidth = 16;
-constexpr unsigned kDefaultV2BgaAccCapacity = 64;
-
-struct ClusterInfo
-{
-    unsigned id = 0;
-    uint64_t nnz = 0;
-    uint64_t num_cols = 0;
-    uint64_t active_rows = 0;
-};
-
-struct SpmvInputs
-{
-    uint64_t n_rows = 0;
-    uint64_t n_cols = 0;
-    uint64_t nnz = 0;
-    vector<ClusterInfo> clusters;
-    vector<int> reordered_col_to_cluster;
-    vector<vector<unsigned>> rows_by_col;
-    uint64_t total_active_row_memberships = 0;
-    uint64_t rows_with_any_partial = 0;
-};
-
-struct DrafClusterInfo
-{
-    unsigned id = 0;
-    uint64_t column_groups = 0;
-    uint64_t draf_rows = 0;
-    uint64_t nnz = 0;
-    uint64_t active_rows = 0;
-};
-
-struct DrafStats
-{
-    vector<DrafClusterInfo> clusters;
-    uint64_t column_groups = 0;
-    uint64_t draf_rows = 0;
-    uint64_t packed_nnz_capacity = 0;
-    uint64_t nnz = 0;
-    uint64_t active_row_memberships = 0;
-    uint64_t rows_with_any_partial = 0;
-    uint64_t nze_padding = 0;
-    uint64_t row_group_padding = 0;
-    double nze_padding_ratio = 0.0;
-    double row_group_padding_ratio = 0.0;
-    double expansion_ratio = 0.0;
-};
-
-struct BgaGroupInfo
-{
-    unsigned channel = 0;
-    unsigned bank_group = 0;
-    uint64_t partials_before = 0;
-    uint64_t partials_after = 0;
-    uint64_t bacc_instructions = 0;
-    uint64_t estimated_flushes = 0;
-    uint64_t simple_capacity_flushes = 0;
-    uint64_t stream_capacity_flushes = 0;
-};
-
-struct BgaStats
-{
-    vector<BgaGroupInfo> groups;
-    uint64_t partials_before = 0;
-    uint64_t partials_after = 0;
-    uint64_t bga_reduce_ops = 0;
-    uint64_t bacc_instructions = 0;
-    uint64_t estimated_flushes = 0;
-    uint64_t max_bacc_instructions_per_group = 0;
-    uint64_t max_estimated_flushes_per_group = 0;
-    uint64_t simple_capacity_flushes = 0;
-    uint64_t stream_capacity_flushes = 0;
-    uint64_t max_simple_capacity_flushes_per_group = 0;
-    uint64_t max_stream_capacity_flushes_per_group = 0;
-    uint64_t output_readback_tx = 0;
-    uint64_t host_reduce_ops_after_bga = 0;
-};
-
-struct SpmvDataset
-{
-    string name;
-    string base;
-};
 
 struct V2Params
 {
@@ -134,28 +51,6 @@ struct V2Params
     bool use_stream_flush = false;
 };
 
-struct ShapeStats
-{
-    double row_nnz_cv = 0.0;
-    double col_nnz_cv = 0.0;
-    double row_nnz_gini = 0.0;
-    double col_nnz_gini = 0.0;
-    double max_row_nnz_over_mean = 0.0;
-    double max_col_nnz_over_mean = 0.0;
-    double hot_top1pct_row_nnz_ratio = 0.0;
-    double bga_partials_imbalance = 0.0;
-    double bga_unique_rows_imbalance = 0.0;
-    double hot_bga_group_ratio = 0.0;
-    double skew_score = 0.0;
-    double bga_reduction_ratio = 0.0;
-    double single_nnz_column_ratio = 0.0;
-    double low_nnz_column_ratio = 0.0;
-    double cluster_row_alignment_ratio = 0.0;
-    double draf_row_alignment_ratio = 0.0;
-    double sampled_cluster_jaccard = 0.0;
-    double draf_padding_pressure = 0.0;
-};
-
 struct PaperTarget
 {
     string workload;
@@ -163,83 +58,6 @@ struct PaperTarget
     double speedup = 0.0;
 };
 
-struct DrafCriticalPathStats
-{
-    double ideal_steps = 0.0;
-    double actual_steps = 0.0;
-    double critical_padding = 0.0;
-    double critical_padding_ratio = 0.0;
-    double group_steps_mean = 0.0;
-    double group_steps_max = 0.0;
-    double bg_imbalance = 0.0;
-};
-
-struct DrafPaddingExposureStats
-{
-    double total_padding_steps = 0.0;
-    double critical_padding_steps = 0.0;
-    double hidden_padding_steps = 0.0;
-    double fragmentation = 0.0;
-    double memory_pressure = 0.0;
-    double imbalance_pressure = 0.0;
-    double exposure_factor = 0.0;
-    double exposed_hidden_padding = 0.0;
-    double effective_padding_steps = 0.0;
-};
-
-struct BgaOverlapStats
-{
-    uint64_t raw_accumulate_cycle = 0;
-    uint64_t exposed_accumulate_cycle = 0;
-    uint64_t hidden_accumulate_cycle = 0;
-    double regularity_score = 0.0;
-    double reuse_score = 0.0;
-    double padding_guard = 0.0;
-    double overlap_factor = 0.0;
-};
-
-struct StructuralModelResult
-{
-    string matrix;
-    double gpu_ms = 0.0;
-    double target_speedup = 0.0;
-    double target_pim_ms = 0.0;
-    double model_ms = 0.0;
-    double model_speedup = 0.0;
-    double speedup_error_ratio = 0.0;
-    uint64_t total_cycle = 0;
-    uint64_t setup_cycle = 0;
-    uint64_t draf_row_fetch_cycle = 0;
-    uint64_t draf_compute_trigger_cycle = 0;
-    uint64_t padding_cycle = 0;
-    uint64_t bga_accumulate_cycle = 0;
-    uint64_t bga_output_readback_cycle = 0;
-    uint64_t final_reduce_cycle = 0;
-    double draf_padding_ratio = 0.0;
-    double draf_memory_expansion = 0.0;
-    double critical_padding = 0.0;
-    double critical_padding_ratio = 0.0;
-    double bg_imbalance = 0.0;
-    double total_padding_steps = 0.0;
-    double hidden_padding_steps = 0.0;
-    double fragmentation = 0.0;
-    double memory_pressure = 0.0;
-    double imbalance_pressure = 0.0;
-    double exposure_factor = 0.0;
-    double exposed_hidden_padding = 0.0;
-    double effective_padding_steps = 0.0;
-    uint64_t bga_raw_accumulate_cycle = 0;
-    uint64_t bga_hidden_accumulate_cycle = 0;
-    double bga_regularity_score = 0.0;
-    double bga_reuse_score = 0.0;
-    double bga_padding_guard = 0.0;
-    double bga_overlap_factor = 0.0;
-};
-
-uint64_t ceilDiv(uint64_t value, uint64_t divisor)
-{
-    return (value + divisor - 1) / divisor;
-}
 
 void addTx(shared_ptr<MultiChannelMemorySystem> mem, PIMAddrManager& addr_mgr, bool is_write,
            unsigned chan, unsigned bg, unsigned bank, unsigned row, unsigned col, BurstType* bst)
@@ -363,39 +181,6 @@ double gpuBaselineMs(const string& matrix)
     return it == baselines.end() ? 0.0 : it->second;
 }
 
-string structuralVariantName(int structural_variant)
-{
-    if (structural_variant >= 6)
-        return "v6_bga_overlap";
-    if (structural_variant >= 5)
-        return "v5_exposure";
-    if (structural_variant >= 4)
-        return "v4_critical_path";
-    return "v3_total_padding";
-}
-
-string structuralResultPath(int structural_variant)
-{
-    if (structural_variant >= 6)
-        return "spmv_guided_kmeans_draf_bga_v6_structural_results.txt";
-    if (structural_variant >= 5)
-        return "spmv_guided_kmeans_draf_bga_v5_structural_results.txt";
-    if (structural_variant >= 4)
-        return "spmv_guided_kmeans_draf_bga_v4_structural_results.txt";
-    return "spmv_guided_kmeans_draf_bga_v3_structural_results.txt";
-}
-
-string structuralDiagnosticPath(int structural_variant)
-{
-    if (structural_variant >= 6)
-        return "spmv_guided_kmeans_draf_bga_v6_phase_diagnostics.txt";
-    if (structural_variant >= 5)
-        return "spmv_guided_kmeans_draf_bga_v5_phase_diagnostics.txt";
-    if (structural_variant >= 4)
-        return "spmv_guided_kmeans_draf_bga_v4_phase_diagnostics.txt";
-    return "spmv_guided_kmeans_draf_bga_v3_phase_diagnostics.txt";
-}
-
 double geomeanSpeedup(const vector<StructuralModelResult>& results,
                       function<double(const StructuralModelResult&)> value_fn)
 {
@@ -431,7 +216,40 @@ void writeStructuralResults(int structural_variant,
            "total_padding_steps hidden_padding_steps fragmentation memory_pressure "
            "imbalance_pressure exposure_factor exposed_hidden_padding effective_padding_steps "
            "bga_raw_accumulate_cycle bga_hidden_accumulate_cycle bga_regularity_score "
-           "bga_reuse_score bga_padding_guard bga_overlap_factor\n";
+           "bga_reuse_score bga_padding_guard bga_overlap_factor "
+           "draf_stream_hidden_cycle draf_stream_regularity_score "
+           "draf_stream_guard_score draf_access_share draf_stream_overlap_factor "
+           "draf_bga_window_occupancy draf_bga_contention_score "
+           "draf_stream_budget_factor row_nnz_gini col_nnz_gini mean_nnz_per_col "
+           "bga_row_reuse_factor bga_unique_row_ratio bga_duplicate_partial_ratio "
+           "bga_near_duplicate_partial_ratio bga_far_duplicate_partial_ratio "
+           "bga_near_duplicate_share accumulator_flush_estimate "
+           "bga_capacity_pressure bga_stream_capacity_flushes bga_critical_flushes "
+           "bga_reuse_aware_accumulate_cycle draf_memory_saved_cycle "
+           "draf_coo_bytes_per_nnz draf_bytes_per_nnz draf_vs_coo_memory_ratio "
+           "draf_memory_saving_factor draf_exposed_memory_saving_factor "
+           "conservative_bga_floor_cycle memory_budgeted_stream_hidden_cycle "
+           "draf_memory_padding_saved_cycle draf_memory_long_stream_score "
+           "conservative_bga_floor_factor stream_memory_budget_factor "
+           "phase_class_code bga_bound_score draf_access_bound_score "
+           "padding_sync_bound_score percentile_tail_exposure_factor "
+           "group_steps_p90 group_steps_p95 group_steps_max "
+           "tail_skew_max_over_p90 tail_skew_max_over_p95 "
+           "p90_to_max_tail_steps p95_to_max_tail_steps "
+           "shared_overlap_window_cycle shared_bga_overlap_cycle "
+           "shared_draf_overlap_cycle draf_step_tail_saved_cycle "
+           "v14_draf_serial_exposure v14_draf_path_cycle "
+           "v14_regular_false_positive_score v14_fragmented_pressure "
+           "v14_tail_flat_low_padding_guard v14_saving_budget_cycle "
+           "v14_saving_demand_cycle v14_bounded_bga_hidden_cycle "
+           "v14_bounded_draf_hidden_cycle v14_bounded_memory_saved_cycle "
+           "v14_bounded_padding_saved_cycle v14_bounded_tail_saved_cycle "
+           "v14_budget_saturation v15_soft_alpha "
+           "v15_true_high_speedup_candidate_score "
+           "v15_regular_false_positive_score v15_graph_like_penalty_score "
+           "v15_saving_budget_cycle v15_saving_demand_cycle "
+           "v15_effective_saving_cycle v15_protected_bga_hidden_cycle "
+           "v15_final_bounded_bga_hidden_cycle v15_budget_saturation_ratio\n";
 
     for (const StructuralModelResult& result : results)
     {
@@ -468,7 +286,80 @@ void writeStructuralResults(int structural_variant,
             << result.bga_regularity_score << " "
             << result.bga_reuse_score << " "
             << result.bga_padding_guard << " "
-            << result.bga_overlap_factor << "\n";
+            << result.bga_overlap_factor << " "
+            << result.draf_stream_hidden_cycle << " "
+            << result.draf_stream_regularity_score << " "
+            << result.draf_stream_guard_score << " "
+            << result.draf_access_share << " "
+            << result.draf_stream_overlap_factor << " "
+            << result.draf_bga_window_occupancy << " "
+            << result.draf_bga_contention_score << " "
+            << result.draf_stream_budget_factor << " "
+            << result.row_nnz_gini << " "
+            << result.col_nnz_gini << " "
+            << result.mean_nnz_per_col << " "
+            << result.bga_row_reuse_factor << " "
+            << result.bga_unique_row_ratio << " "
+            << result.bga_duplicate_partial_ratio << " "
+            << result.bga_near_duplicate_partial_ratio << " "
+            << result.bga_far_duplicate_partial_ratio << " "
+            << result.bga_near_duplicate_share << " "
+            << result.accumulator_flush_estimate << " "
+            << result.bga_capacity_pressure << " "
+            << result.bga_stream_capacity_flushes << " "
+            << result.bga_critical_flushes << " "
+            << result.bga_reuse_aware_accumulate_cycle << " "
+            << result.draf_memory_saved_cycle << " "
+            << result.draf_coo_bytes_per_nnz << " "
+            << result.draf_bytes_per_nnz << " "
+            << result.draf_vs_coo_memory_ratio << " "
+            << result.draf_memory_saving_factor << " "
+            << result.draf_exposed_memory_saving_factor << " "
+            << result.conservative_bga_floor_cycle << " "
+            << result.memory_budgeted_stream_hidden_cycle << " "
+            << result.draf_memory_padding_saved_cycle << " "
+            << result.draf_memory_long_stream_score << " "
+            << result.conservative_bga_floor_factor << " "
+            << result.stream_memory_budget_factor << " "
+            << result.phase_class_code << " "
+            << result.bga_bound_score << " "
+            << result.draf_access_bound_score << " "
+            << result.padding_sync_bound_score << " "
+            << result.percentile_tail_exposure_factor << " "
+            << result.group_steps_p90 << " "
+            << result.group_steps_p95 << " "
+            << result.group_steps_max << " "
+            << result.tail_skew_max_over_p90 << " "
+            << result.tail_skew_max_over_p95 << " "
+            << result.p90_to_max_tail_steps << " "
+            << result.p95_to_max_tail_steps << " "
+            << result.shared_overlap_window_cycle << " "
+            << result.shared_bga_overlap_cycle << " "
+            << result.shared_draf_overlap_cycle << " "
+            << result.draf_step_tail_saved_cycle << " "
+            << result.v14_draf_serial_exposure << " "
+            << result.v14_draf_path_cycle << " "
+            << result.v14_regular_false_positive_score << " "
+            << result.v14_fragmented_pressure << " "
+            << result.v14_tail_flat_low_padding_guard << " "
+            << result.v14_saving_budget_cycle << " "
+            << result.v14_saving_demand_cycle << " "
+            << result.v14_bounded_bga_hidden_cycle << " "
+            << result.v14_bounded_draf_hidden_cycle << " "
+            << result.v14_bounded_memory_saved_cycle << " "
+            << result.v14_bounded_padding_saved_cycle << " "
+            << result.v14_bounded_tail_saved_cycle << " "
+            << result.v14_budget_saturation << " "
+            << result.v15_soft_alpha << " "
+            << result.v15_true_high_speedup_candidate_score << " "
+            << result.v15_regular_false_positive_score << " "
+            << result.v15_graph_like_penalty_score << " "
+            << result.v15_saving_budget_cycle << " "
+            << result.v15_saving_demand_cycle << " "
+            << result.v15_effective_saving_cycle << " "
+            << result.v15_protected_bga_hidden_cycle << " "
+            << result.v15_final_bounded_bga_hidden_cycle << " "
+            << result.v15_budget_saturation_ratio << "\n";
     }
 
     out << "gmean_target_speedup: "
@@ -511,7 +402,15 @@ void writeStructuralDiagnostics(int structural_variant,
            "aggressive_overlap_speedup aggressive_overlap_over_target "
            "wide_final_ms wide_final_speedup wide_final_over_target "
            "compute_bga_overlap_wide_final_ms compute_bga_overlap_wide_final_speedup "
-           "compute_bga_overlap_wide_final_over_target\n";
+           "compute_bga_overlap_wide_final_over_target phase_class_code "
+           "bga_bound_score draf_access_bound_score padding_sync_bound_score "
+           "percentile_tail_exposure_factor shared_overlap_window_cycle "
+           "shared_bga_overlap_cycle shared_draf_overlap_cycle "
+           "draf_step_tail_saved_cycle group_steps_p90 group_steps_p95 "
+           "group_steps_max tail_skew_max_over_p90 tail_skew_max_over_p95 "
+           "p90_to_max_tail_steps p95_to_max_tail_steps "
+           "bga_near_duplicate_partial_ratio bga_far_duplicate_partial_ratio "
+           "bga_near_duplicate_share accumulator_flush_estimate\n";
 
     for (const StructuralModelResult& result : results)
     {
@@ -520,6 +419,9 @@ void writeStructuralDiagnostics(int structural_variant,
                                result.bga_accumulate_cycle +
                                result.bga_output_readback_cycle +
                                result.final_reduce_cycle;
+        known_cycle = known_cycle > result.draf_stream_hidden_cycle
+                          ? known_cycle - result.draf_stream_hidden_cycle
+                          : 0;
         uint64_t mode_cycle =
             result.total_cycle > known_cycle ? result.total_cycle - known_cycle : 0;
         uint64_t compute_path_cycle =
@@ -528,11 +430,19 @@ void writeStructuralDiagnostics(int structural_variant,
             result.setup_cycle + result.draf_row_fetch_cycle +
             max(compute_path_cycle, result.bga_accumulate_cycle) +
             result.bga_output_readback_cycle + result.final_reduce_cycle + mode_cycle;
+        compute_bga_overlap_cycle =
+            compute_bga_overlap_cycle > result.draf_stream_hidden_cycle
+                ? compute_bga_overlap_cycle - result.draf_stream_hidden_cycle
+                : 0;
         uint64_t aggressive_overlap_cycle =
             result.setup_cycle +
             max(result.draf_row_fetch_cycle,
                 max(compute_path_cycle, result.bga_accumulate_cycle)) +
             result.bga_output_readback_cycle + result.final_reduce_cycle + mode_cycle;
+        aggressive_overlap_cycle =
+            aggressive_overlap_cycle > result.draf_stream_hidden_cycle
+                ? aggressive_overlap_cycle - result.draf_stream_hidden_cycle
+                : 0;
         uint64_t wide_final_cycle = ceilDiv(result.final_reduce_cycle, 4);
         uint64_t wide_final_total_cycle =
             result.total_cycle - result.final_reduce_cycle + wide_final_cycle;
@@ -591,8 +501,227 @@ void writeStructuralDiagnostics(int structural_variant,
             << overTarget(wide_final_speedup) << " "
             << overlap_wide_final_ms << " "
             << overlap_wide_final_speedup << " "
-            << overTarget(overlap_wide_final_speedup) << "\n";
+            << overTarget(overlap_wide_final_speedup) << " "
+            << result.phase_class_code << " "
+            << result.bga_bound_score << " "
+            << result.draf_access_bound_score << " "
+            << result.padding_sync_bound_score << " "
+            << result.percentile_tail_exposure_factor << " "
+            << result.shared_overlap_window_cycle << " "
+            << result.shared_bga_overlap_cycle << " "
+            << result.shared_draf_overlap_cycle << " "
+            << result.draf_step_tail_saved_cycle << " "
+            << result.group_steps_p90 << " "
+            << result.group_steps_p95 << " "
+            << result.group_steps_max << " "
+            << result.tail_skew_max_over_p90 << " "
+            << result.tail_skew_max_over_p95 << " "
+            << result.p90_to_max_tail_steps << " "
+            << result.p95_to_max_tail_steps << " "
+            << result.bga_near_duplicate_partial_ratio << " "
+            << result.bga_far_duplicate_partial_ratio << " "
+            << result.bga_near_duplicate_share << " "
+            << result.accumulator_flush_estimate << "\n";
     }
+}
+
+double pearsonCorrelation(const vector<double>& lhs, const vector<double>& rhs)
+{
+    if (lhs.size() != rhs.size() || lhs.size() < 2)
+        return 0.0;
+    double lhs_sum = 0.0;
+    double rhs_sum = 0.0;
+    for (size_t i = 0; i < lhs.size(); ++i)
+    {
+        lhs_sum += lhs[i];
+        rhs_sum += rhs[i];
+    }
+    double lhs_mean = lhs_sum / lhs.size();
+    double rhs_mean = rhs_sum / rhs.size();
+    double cov = 0.0;
+    double lhs_var = 0.0;
+    double rhs_var = 0.0;
+    for (size_t i = 0; i < lhs.size(); ++i)
+    {
+        double lhs_diff = lhs[i] - lhs_mean;
+        double rhs_diff = rhs[i] - rhs_mean;
+        cov += lhs_diff * rhs_diff;
+        lhs_var += lhs_diff * lhs_diff;
+        rhs_var += rhs_diff * rhs_diff;
+    }
+    if (lhs_var == 0.0 || rhs_var == 0.0)
+        return 0.0;
+    return cov / sqrt(lhs_var * rhs_var);
+}
+
+void writeStructuralResidualAnalysis(int structural_variant,
+                                     const vector<StructuralModelResult>& results)
+{
+    string path = structuralResidualPath(structural_variant);
+    ofstream out(path);
+    if (!out)
+        throw runtime_error("failed to open " + path);
+
+    out << "# SparsePIM structural residual feature analysis\n";
+    out << "model_variant: " << structuralVariantName(structural_variant) << "\n";
+    out << "source_results: " << structuralResultPath(structural_variant) << "\n";
+    out << "residual_definition: log(model_speedup) - log(target_speedup)\n";
+    out << "notes: correlations are diagnostic only; model equations do not fit to targets\n";
+    out << "columns: matrix residual_log model_speedup target_speedup "
+           "mean_nnz_per_col row_nnz_gini col_nnz_gini single_nnz_column_ratio "
+           "low_nnz_column_ratio draf_memory_expansion critical_padding_ratio "
+           "exposure_factor bga_reduction_ratio bga_row_reuse_factor "
+           "bga_unique_row_ratio bga_duplicate_partial_ratio "
+           "bga_near_duplicate_partial_ratio bga_far_duplicate_partial_ratio "
+           "bga_near_duplicate_share accumulator_flush_estimate bga_capacity_pressure "
+           "bga_stream_capacity_flushes bga_critical_flushes "
+           "bga_reuse_aware_accumulate_cycle draf_access_share "
+           "draf_bga_window_occupancy draf_bga_contention_score "
+           "draf_vs_coo_memory_ratio draf_exposed_memory_saving_factor "
+           "phase_class_code bga_bound_score draf_access_bound_score "
+           "padding_sync_bound_score percentile_tail_exposure_factor "
+           "tail_skew_max_over_p90 tail_skew_max_over_p95 "
+           "p90_to_max_tail_steps p95_to_max_tail_steps "
+           "shared_bga_overlap_cycle shared_draf_overlap_cycle "
+           "draf_step_tail_saved_cycle\n";
+
+    vector<double> residuals;
+    vector<pair<string, vector<double>>> features{
+        {"mean_nnz_per_col", {}},
+        {"row_nnz_gini", {}},
+        {"col_nnz_gini", {}},
+        {"single_nnz_column_ratio", {}},
+        {"low_nnz_column_ratio", {}},
+        {"draf_memory_expansion", {}},
+        {"critical_padding_ratio", {}},
+        {"exposure_factor", {}},
+        {"bga_reduction_ratio", {}},
+        {"bga_row_reuse_factor", {}},
+        {"bga_unique_row_ratio", {}},
+        {"bga_duplicate_partial_ratio", {}},
+        {"bga_near_duplicate_partial_ratio", {}},
+        {"bga_far_duplicate_partial_ratio", {}},
+        {"bga_near_duplicate_share", {}},
+        {"accumulator_flush_estimate", {}},
+        {"bga_capacity_pressure", {}},
+        {"bga_stream_capacity_flushes", {}},
+        {"bga_critical_flushes", {}},
+        {"bga_reuse_aware_accumulate_cycle", {}},
+        {"draf_access_share", {}},
+        {"draf_bga_window_occupancy", {}},
+        {"draf_bga_contention_score", {}},
+        {"draf_vs_coo_memory_ratio", {}},
+        {"draf_exposed_memory_saving_factor", {}},
+        {"phase_class_code", {}},
+        {"bga_bound_score", {}},
+        {"draf_access_bound_score", {}},
+        {"padding_sync_bound_score", {}},
+        {"percentile_tail_exposure_factor", {}},
+        {"tail_skew_max_over_p90", {}},
+        {"tail_skew_max_over_p95", {}},
+        {"p90_to_max_tail_steps", {}},
+        {"p95_to_max_tail_steps", {}},
+        {"shared_bga_overlap_cycle", {}},
+        {"shared_draf_overlap_cycle", {}},
+        {"draf_step_tail_saved_cycle", {}},
+    };
+
+    for (const StructuralModelResult& result : results)
+    {
+        if (result.model_speedup <= 0.0 || result.target_speedup <= 0.0)
+            continue;
+        double residual = log(result.model_speedup) - log(result.target_speedup);
+        residuals.push_back(residual);
+        vector<double> values{
+            result.mean_nnz_per_col,
+            result.row_nnz_gini,
+            result.col_nnz_gini,
+            result.single_nnz_column_ratio,
+            result.low_nnz_column_ratio,
+            result.draf_memory_expansion,
+            result.critical_padding_ratio,
+            result.exposure_factor,
+            result.bga_reuse_score,
+            result.bga_row_reuse_factor,
+            result.bga_unique_row_ratio,
+            result.bga_duplicate_partial_ratio,
+            result.bga_near_duplicate_partial_ratio,
+            result.bga_far_duplicate_partial_ratio,
+            result.bga_near_duplicate_share,
+            static_cast<double>(result.accumulator_flush_estimate),
+            result.bga_capacity_pressure,
+            static_cast<double>(result.bga_stream_capacity_flushes),
+            static_cast<double>(result.bga_critical_flushes),
+            static_cast<double>(result.bga_reuse_aware_accumulate_cycle),
+            result.draf_access_share,
+            result.draf_bga_window_occupancy,
+            result.draf_bga_contention_score,
+            result.draf_vs_coo_memory_ratio,
+            result.draf_exposed_memory_saving_factor,
+            result.phase_class_code,
+            result.bga_bound_score,
+            result.draf_access_bound_score,
+            result.padding_sync_bound_score,
+            result.percentile_tail_exposure_factor,
+            result.tail_skew_max_over_p90,
+            result.tail_skew_max_over_p95,
+            result.p90_to_max_tail_steps,
+            result.p95_to_max_tail_steps,
+            static_cast<double>(result.shared_bga_overlap_cycle),
+            static_cast<double>(result.shared_draf_overlap_cycle),
+            static_cast<double>(result.draf_step_tail_saved_cycle),
+        };
+        for (size_t i = 0; i < features.size(); ++i)
+            features[i].second.push_back(values[i]);
+
+        out << result.matrix << " "
+            << residual << " "
+            << result.model_speedup << " "
+            << result.target_speedup << " "
+            << result.mean_nnz_per_col << " "
+            << result.row_nnz_gini << " "
+            << result.col_nnz_gini << " "
+            << result.single_nnz_column_ratio << " "
+            << result.low_nnz_column_ratio << " "
+            << result.draf_memory_expansion << " "
+            << result.critical_padding_ratio << " "
+            << result.exposure_factor << " "
+            << result.bga_reuse_score << " "
+            << result.bga_row_reuse_factor << " "
+            << result.bga_unique_row_ratio << " "
+            << result.bga_duplicate_partial_ratio << " "
+            << result.bga_near_duplicate_partial_ratio << " "
+            << result.bga_far_duplicate_partial_ratio << " "
+            << result.bga_near_duplicate_share << " "
+            << result.accumulator_flush_estimate << " "
+            << result.bga_capacity_pressure << " "
+            << result.bga_stream_capacity_flushes << " "
+            << result.bga_critical_flushes << " "
+            << result.bga_reuse_aware_accumulate_cycle << " "
+            << result.draf_access_share << " "
+            << result.draf_bga_window_occupancy << " "
+            << result.draf_bga_contention_score << " "
+            << result.draf_vs_coo_memory_ratio << " "
+            << result.draf_exposed_memory_saving_factor << " "
+            << result.phase_class_code << " "
+            << result.bga_bound_score << " "
+            << result.draf_access_bound_score << " "
+            << result.padding_sync_bound_score << " "
+            << result.percentile_tail_exposure_factor << " "
+            << result.tail_skew_max_over_p90 << " "
+            << result.tail_skew_max_over_p95 << " "
+            << result.p90_to_max_tail_steps << " "
+            << result.p95_to_max_tail_steps << " "
+            << result.shared_bga_overlap_cycle << " "
+            << result.shared_draf_overlap_cycle << " "
+            << result.draf_step_tail_saved_cycle << "\n";
+    }
+
+    out << "\n# Pearson correlation with residual_log\n";
+    out << "columns: feature pearson_r\n";
+    for (const auto& feature : features)
+        out << feature.first << " "
+            << pearsonCorrelation(residuals, feature.second) << "\n";
 }
 
 void addPhaseBarriers(shared_ptr<MultiChannelMemorySystem> mem, const vector<char>& active_channels)
@@ -602,645 +731,6 @@ void addPhaseBarriers(shared_ptr<MultiChannelMemorySystem> mem, const vector<cha
         if (active_channels[chan])
             mem->addBarrier(static_cast<int>(chan));
     }
-}
-
-SpmvInputs loadSparsePIMInputs(const string& matrix_path, const string& permutation_path,
-                               const string& clusters_path)
-{
-    SpmvInputs inputs;
-    ifstream cluster_file(clusters_path);
-    if (!cluster_file)
-        throw runtime_error("failed to open " + clusters_path);
-
-    string line;
-    while (getline(cluster_file, line))
-    {
-        if (line.empty() || line[0] == '#')
-            continue;
-        istringstream iss(line);
-        ClusterInfo info;
-        if (!(iss >> info.id >> info.nnz >> info.num_cols))
-            continue;
-        if (inputs.clusters.size() <= info.id)
-            inputs.clusters.resize(info.id + 1);
-        inputs.clusters[info.id] = info;
-    }
-
-    ifstream permutation_file(permutation_path);
-    if (!permutation_file)
-        throw runtime_error("failed to open " + permutation_path);
-
-    while (getline(permutation_file, line))
-    {
-        if (line.empty() || line[0] == '#')
-            continue;
-        istringstream iss(line);
-        uint64_t old_col = 0;
-        uint64_t new_col = 0;
-        uint64_t cluster = 0;
-        if (!(iss >> old_col >> new_col >> cluster))
-            continue;
-        (void)old_col;
-        if (inputs.reordered_col_to_cluster.size() <= new_col)
-            inputs.reordered_col_to_cluster.resize(new_col + 1, -1);
-        inputs.reordered_col_to_cluster[new_col] = static_cast<int>(cluster);
-    }
-
-    ifstream matrix_file(matrix_path);
-    if (!matrix_file)
-        throw runtime_error("failed to open " + matrix_path);
-    matrix_file >> inputs.n_rows >> inputs.n_cols >> inputs.nnz;
-    inputs.rows_by_col.resize(inputs.n_cols);
-
-    vector<unordered_set<unsigned>> active_rows_by_cluster(inputs.clusters.size());
-    vector<char> any_row(inputs.n_rows, 0);
-
-    uint64_t row = 0;
-    uint64_t col = 0;
-    string value;
-    while (matrix_file >> row >> col >> value)
-    {
-        if (col >= inputs.reordered_col_to_cluster.size())
-            throw runtime_error("matrix column exceeds permutation table");
-        int cluster = inputs.reordered_col_to_cluster[col];
-        if (cluster < 0 || static_cast<size_t>(cluster) >= active_rows_by_cluster.size())
-            throw runtime_error("matrix column has no cluster assignment");
-        active_rows_by_cluster[cluster].insert(static_cast<unsigned>(row));
-        inputs.rows_by_col[col].push_back(static_cast<unsigned>(row));
-        any_row[row] = 1;
-    }
-
-    for (size_t i = 0; i < inputs.clusters.size(); ++i)
-    {
-        inputs.clusters[i].active_rows = active_rows_by_cluster[i].size();
-        inputs.total_active_row_memberships += inputs.clusters[i].active_rows;
-    }
-    inputs.rows_with_any_partial = count(any_row.begin(), any_row.end(), 1);
-    return inputs;
-}
-
-void applyClusterLimit(SpmvInputs& inputs, uint64_t max_clusters)
-{
-    if (max_clusters == 0 || max_clusters >= inputs.clusters.size())
-        return;
-
-    vector<unordered_set<unsigned>> active_rows_by_cluster(max_clusters);
-    vector<char> any_row(inputs.n_rows, 0);
-    uint64_t filtered_nnz = 0;
-
-    for (size_t col = 0; col < inputs.rows_by_col.size(); ++col)
-    {
-        int cluster = col < inputs.reordered_col_to_cluster.size()
-                          ? inputs.reordered_col_to_cluster[col]
-                          : -1;
-        if (cluster < 0 || static_cast<uint64_t>(cluster) >= max_clusters)
-            continue;
-        for (unsigned row : inputs.rows_by_col[col])
-        {
-            active_rows_by_cluster[cluster].insert(row);
-            any_row[row] = 1;
-            filtered_nnz++;
-        }
-    }
-
-    inputs.clusters.resize(max_clusters);
-    inputs.total_active_row_memberships = 0;
-    inputs.nnz = filtered_nnz;
-    for (size_t cluster = 0; cluster < inputs.clusters.size(); ++cluster)
-    {
-        inputs.clusters[cluster].active_rows = active_rows_by_cluster[cluster].size();
-        inputs.total_active_row_memberships += inputs.clusters[cluster].active_rows;
-    }
-    inputs.rows_with_any_partial = count(any_row.begin(), any_row.end(), 1);
-}
-
-DrafStats buildDrafStats(const SpmvInputs& inputs)
-{
-    DrafStats stats;
-    stats.clusters.resize(inputs.clusters.size());
-    vector<unordered_set<unsigned>> active_rows_by_cluster(inputs.clusters.size());
-    vector<char> any_row(inputs.n_rows, 0);
-
-    for (size_t i = 0; i < inputs.clusters.size(); ++i)
-        stats.clusters[i].id = inputs.clusters[i].id;
-
-    for (size_t col = 0; col < inputs.rows_by_col.size(); ++col)
-    {
-        int cluster = col < inputs.reordered_col_to_cluster.size()
-                          ? inputs.reordered_col_to_cluster[col]
-                          : -1;
-        if (cluster < 0 || static_cast<size_t>(cluster) >= inputs.clusters.size())
-            continue;
-
-        const vector<unsigned>& rows = inputs.rows_by_col[col];
-        if (rows.empty())
-            continue;
-
-        uint64_t groups = ceilDiv(rows.size(), kDrafNzesPerColumnGroup);
-        DrafClusterInfo& cluster_info = stats.clusters[cluster];
-        cluster_info.column_groups += groups;
-        cluster_info.nnz += rows.size();
-        stats.column_groups += groups;
-        stats.nnz += rows.size();
-        stats.nze_padding += groups * kDrafNzesPerColumnGroup - rows.size();
-
-        for (unsigned row : rows)
-        {
-            active_rows_by_cluster[cluster].insert(row);
-            any_row[row] = 1;
-        }
-    }
-
-    for (size_t cluster = 0; cluster < stats.clusters.size(); ++cluster)
-    {
-        DrafClusterInfo& cluster_info = stats.clusters[cluster];
-        cluster_info.draf_rows = ceilDiv(cluster_info.column_groups, kDrafColumnGroupsPerRow);
-        cluster_info.active_rows = active_rows_by_cluster[cluster].size();
-        stats.draf_rows += cluster_info.draf_rows;
-        stats.active_row_memberships += cluster_info.active_rows;
-        stats.row_group_padding +=
-            cluster_info.draf_rows * kDrafColumnGroupsPerRow - cluster_info.column_groups;
-    }
-    stats.packed_nnz_capacity =
-        stats.draf_rows * kDrafColumnGroupsPerRow * kDrafNzesPerColumnGroup;
-    stats.rows_with_any_partial = count(any_row.begin(), any_row.end(), 1);
-    stats.nze_padding_ratio =
-        stats.nnz == 0 ? 0.0 : static_cast<double>(stats.nze_padding) / stats.nnz;
-    stats.row_group_padding_ratio =
-        stats.column_groups == 0
-            ? 0.0
-            : static_cast<double>(stats.row_group_padding) / stats.column_groups;
-    stats.expansion_ratio =
-        stats.nnz == 0 ? 0.0 : static_cast<double>(stats.packed_nnz_capacity) / stats.nnz;
-    return stats;
-}
-
-uint64_t estimateBgaFlushes(uint64_t bacc_instructions)
-{
-    if (bacc_instructions <= 2)
-        return 0;
-
-    uint64_t flushes = 0;
-    uint64_t valid_entries = 0;
-    for (uint64_t i = 0; i < bacc_instructions; ++i)
-    {
-        if (valid_entries > kBgaFlushThreshold)
-        {
-            flushes++;
-            valid_entries = 0;
-        }
-        valid_entries += kBgaEntriesPerBacc;
-        if (valid_entries > kBgaQueueDepth)
-            valid_entries = kBgaQueueDepth;
-    }
-    return flushes;
-}
-
-uint64_t estimateSimpleCapacityFlushes(uint64_t unique_rows, uint64_t capacity)
-{
-    if (unique_rows <= capacity)
-        return 0;
-    return ceilDiv(unique_rows, capacity) - 1;
-}
-
-uint64_t estimateStreamCapacityFlushes(const vector<unsigned>& row_stream, uint64_t capacity)
-{
-    unordered_set<unsigned> active_rows;
-    uint64_t flushes = 0;
-    for (unsigned row : row_stream)
-    {
-        if (active_rows.find(row) != active_rows.end())
-            continue;
-        if (active_rows.size() >= capacity)
-        {
-            flushes++;
-            active_rows.clear();
-        }
-        active_rows.insert(row);
-    }
-    return flushes;
-}
-
-BgaStats buildBgaStats(const SpmvInputs& inputs,
-                       uint64_t bga_acc_capacity = kDefaultV2BgaAccCapacity)
-{
-    BgaStats stats;
-    constexpr unsigned kLogicalBankGroups = 4;
-    uint64_t num_groups = static_cast<uint64_t>(64) * kLogicalBankGroups;
-    vector<uint64_t> partials_by_group(num_groups, 0);
-    vector<unordered_set<unsigned>> rows_by_group(num_groups);
-    vector<vector<unsigned>> row_stream_by_group(num_groups);
-
-    for (size_t col = 0; col < inputs.rows_by_col.size(); ++col)
-    {
-        int cluster = col < inputs.reordered_col_to_cluster.size()
-                          ? inputs.reordered_col_to_cluster[col]
-                          : -1;
-        if (cluster < 0 || static_cast<size_t>(cluster) >= inputs.clusters.size())
-            continue;
-
-        unsigned channel = static_cast<unsigned>(cluster) / kLogicalBankGroups;
-        unsigned bank_group = static_cast<unsigned>(cluster) % kLogicalBankGroups;
-        uint64_t group_idx = channel * kLogicalBankGroups + bank_group;
-        for (unsigned row : inputs.rows_by_col[col])
-        {
-            partials_by_group[group_idx]++;
-            rows_by_group[group_idx].insert(row);
-            row_stream_by_group[group_idx].push_back(row);
-        }
-    }
-
-    vector<uint16_t> row_bga_memberships(inputs.n_rows, 0);
-    for (uint64_t group_idx = 0; group_idx < num_groups; ++group_idx)
-    {
-        if (partials_by_group[group_idx] == 0)
-            continue;
-
-        BgaGroupInfo info;
-        info.channel = group_idx / kLogicalBankGroups;
-        info.bank_group = group_idx % kLogicalBankGroups;
-        info.partials_before = partials_by_group[group_idx];
-        info.partials_after = rows_by_group[group_idx].size();
-        info.bacc_instructions = ceilDiv(info.partials_before, kBgaEntriesPerBacc);
-        info.estimated_flushes = estimateBgaFlushes(info.bacc_instructions);
-        info.simple_capacity_flushes =
-            estimateSimpleCapacityFlushes(info.partials_after, bga_acc_capacity);
-        info.stream_capacity_flushes =
-            estimateStreamCapacityFlushes(row_stream_by_group[group_idx], bga_acc_capacity);
-
-        stats.partials_before += info.partials_before;
-        stats.partials_after += info.partials_after;
-        stats.bacc_instructions += info.bacc_instructions;
-        stats.estimated_flushes += info.estimated_flushes;
-        stats.simple_capacity_flushes += info.simple_capacity_flushes;
-        stats.stream_capacity_flushes += info.stream_capacity_flushes;
-        stats.max_bacc_instructions_per_group =
-            max(stats.max_bacc_instructions_per_group, info.bacc_instructions);
-        stats.max_estimated_flushes_per_group =
-            max(stats.max_estimated_flushes_per_group, info.estimated_flushes);
-        stats.max_simple_capacity_flushes_per_group =
-            max(stats.max_simple_capacity_flushes_per_group, info.simple_capacity_flushes);
-        stats.max_stream_capacity_flushes_per_group =
-            max(stats.max_stream_capacity_flushes_per_group, info.stream_capacity_flushes);
-        stats.groups.push_back(info);
-
-        for (unsigned row : rows_by_group[group_idx])
-            row_bga_memberships[row]++;
-    }
-
-    stats.bga_reduce_ops = stats.partials_before > stats.partials_after
-                               ? stats.partials_before - stats.partials_after
-                               : 0;
-    stats.output_readback_tx = ceilDiv(stats.partials_after, kElementsPerBurst);
-    for (uint16_t memberships : row_bga_memberships)
-    {
-        if (memberships > 1)
-            stats.host_reduce_ops_after_bga += memberships - 1;
-    }
-    return stats;
-}
-
-double meanOf(const vector<uint64_t>& values)
-{
-    if (values.empty())
-        return 0.0;
-    double sum = 0.0;
-    for (uint64_t value : values)
-        sum += static_cast<double>(value);
-    return sum / values.size();
-}
-
-double coefficientOfVariation(const vector<uint64_t>& values)
-{
-    double mean = meanOf(values);
-    if (mean == 0.0)
-        return 0.0;
-    double sum_sq = 0.0;
-    for (uint64_t value : values)
-    {
-        double diff = static_cast<double>(value) - mean;
-        sum_sq += diff * diff;
-    }
-    return sqrt(sum_sq / values.size()) / mean;
-}
-
-double giniCoefficient(vector<uint64_t> values)
-{
-    if (values.empty())
-        return 0.0;
-    sort(values.begin(), values.end());
-    double sum = 0.0;
-    double weighted_sum = 0.0;
-    for (size_t i = 0; i < values.size(); ++i)
-    {
-        sum += static_cast<double>(values[i]);
-        weighted_sum += static_cast<double>(i + 1) * values[i];
-    }
-    if (sum == 0.0)
-        return 0.0;
-    double n = static_cast<double>(values.size());
-    return (2.0 * weighted_sum) / (n * sum) - (n + 1.0) / n;
-}
-
-double maxOverMean(const vector<uint64_t>& values)
-{
-    double mean = meanOf(values);
-    if (mean == 0.0)
-        return 0.0;
-    uint64_t max_value = 0;
-    for (uint64_t value : values)
-        max_value = max(max_value, value);
-    return static_cast<double>(max_value) / mean;
-}
-
-double topPercentRatio(vector<uint64_t> values, double percent)
-{
-    if (values.empty())
-        return 0.0;
-    double total = 0.0;
-    for (uint64_t value : values)
-        total += static_cast<double>(value);
-    if (total == 0.0)
-        return 0.0;
-    sort(values.begin(), values.end(), greater<uint64_t>());
-    size_t top_count =
-        max<size_t>(1, static_cast<size_t>(ceil(values.size() * percent / 100.0)));
-    double top_sum = 0.0;
-    for (size_t i = 0; i < top_count && i < values.size(); ++i)
-        top_sum += static_cast<double>(values[i]);
-    return top_sum / total;
-}
-
-double normalizeRatio(double value, double scale)
-{
-    if (value <= 1.0)
-        return 0.0;
-    return min(1.0, log(value) / log(scale));
-}
-
-double clamp01(double value)
-{
-    return min(1.0, max(0.0, value));
-}
-
-double jaccardOfSortedRows(vector<unsigned> lhs, vector<unsigned> rhs)
-{
-    if (lhs.empty() && rhs.empty())
-        return 0.0;
-    sort(lhs.begin(), lhs.end());
-    sort(rhs.begin(), rhs.end());
-    size_t i = 0;
-    size_t j = 0;
-    uint64_t intersection = 0;
-    uint64_t union_count = 0;
-    while (i < lhs.size() || j < rhs.size())
-    {
-        if (j >= rhs.size() || (i < lhs.size() && lhs[i] < rhs[j]))
-        {
-            union_count++;
-            i++;
-        }
-        else if (i >= lhs.size() || rhs[j] < lhs[i])
-        {
-            union_count++;
-            j++;
-        }
-        else
-        {
-            intersection++;
-            union_count++;
-            i++;
-            j++;
-        }
-    }
-    return union_count == 0 ? 0.0 : static_cast<double>(intersection) / union_count;
-}
-
-double sampledClusterJaccard(const SpmvInputs& inputs)
-{
-    constexpr size_t kMaxColumnsPerCluster = 32;
-    vector<vector<size_t>> sampled_cols_by_cluster(inputs.clusters.size());
-    vector<uint64_t> sampled_nnz_by_cluster(inputs.clusters.size(), 0);
-
-    for (size_t col = 0; col < inputs.rows_by_col.size(); ++col)
-    {
-        if (inputs.rows_by_col[col].empty())
-            continue;
-        int cluster = col < inputs.reordered_col_to_cluster.size()
-                          ? inputs.reordered_col_to_cluster[col]
-                          : -1;
-        if (cluster < 0 || static_cast<size_t>(cluster) >= inputs.clusters.size())
-            continue;
-        vector<size_t>& sampled_cols = sampled_cols_by_cluster[cluster];
-        if (sampled_cols.size() < kMaxColumnsPerCluster)
-            sampled_cols.push_back(col);
-        sampled_nnz_by_cluster[cluster] += inputs.rows_by_col[col].size();
-    }
-
-    double weighted_jaccard = 0.0;
-    double total_weight = 0.0;
-    for (size_t cluster = 0; cluster < sampled_cols_by_cluster.size(); ++cluster)
-    {
-        const vector<size_t>& sampled_cols = sampled_cols_by_cluster[cluster];
-        if (sampled_cols.size() < 2)
-            continue;
-
-        double sum = 0.0;
-        uint64_t pairs = 0;
-        for (size_t i = 0; i < sampled_cols.size(); ++i)
-        {
-            for (size_t j = i + 1; j < sampled_cols.size(); ++j)
-            {
-                sum += jaccardOfSortedRows(inputs.rows_by_col[sampled_cols[i]],
-                                           inputs.rows_by_col[sampled_cols[j]]);
-                pairs++;
-            }
-        }
-        if (pairs == 0)
-            continue;
-        double weight = static_cast<double>(sampled_nnz_by_cluster[cluster]);
-        weighted_jaccard += (sum / pairs) * weight;
-        total_weight += weight;
-    }
-    return total_weight == 0.0 ? 0.0 : weighted_jaccard / total_weight;
-}
-
-ShapeStats buildShapeStats(const SpmvInputs& inputs, const DrafStats& draf, const BgaStats& bga)
-{
-    ShapeStats stats;
-    vector<uint64_t> col_nnz(inputs.rows_by_col.size(), 0);
-    vector<uint64_t> row_nnz(inputs.n_rows, 0);
-    uint64_t single_nnz_columns = 0;
-    uint64_t low_nnz_columns = 0;
-    uint64_t nonempty_columns = 0;
-    for (size_t col = 0; col < inputs.rows_by_col.size(); ++col)
-    {
-        col_nnz[col] = inputs.rows_by_col[col].size();
-        if (col_nnz[col] > 0)
-        {
-            nonempty_columns++;
-            if (col_nnz[col] == 1)
-                single_nnz_columns++;
-            if (col_nnz[col] < kDrafNzesPerColumnGroup)
-                low_nnz_columns++;
-        }
-        for (unsigned row : inputs.rows_by_col[col])
-            row_nnz[row]++;
-    }
-
-    stats.row_nnz_cv = coefficientOfVariation(row_nnz);
-    stats.col_nnz_cv = coefficientOfVariation(col_nnz);
-    stats.row_nnz_gini = giniCoefficient(row_nnz);
-    stats.col_nnz_gini = giniCoefficient(col_nnz);
-    stats.max_row_nnz_over_mean = maxOverMean(row_nnz);
-    stats.max_col_nnz_over_mean = maxOverMean(col_nnz);
-    stats.hot_top1pct_row_nnz_ratio = topPercentRatio(row_nnz, 1.0);
-
-    vector<uint64_t> group_partials;
-    vector<uint64_t> group_unique_rows;
-    for (const BgaGroupInfo& group : bga.groups)
-    {
-        group_partials.push_back(group.partials_before);
-        group_unique_rows.push_back(group.partials_after);
-    }
-    stats.bga_partials_imbalance = maxOverMean(group_partials);
-    stats.bga_unique_rows_imbalance = maxOverMean(group_unique_rows);
-    uint64_t max_group_partials = 0;
-    for (uint64_t partials : group_partials)
-        max_group_partials = max(max_group_partials, partials);
-    stats.hot_bga_group_ratio =
-        bga.partials_before == 0
-            ? 0.0
-            : static_cast<double>(max_group_partials) / bga.partials_before;
-    stats.bga_reduction_ratio =
-        bga.partials_before == 0
-            ? 0.0
-            : 1.0 - static_cast<double>(bga.partials_after) / bga.partials_before;
-    stats.single_nnz_column_ratio =
-        nonempty_columns == 0 ? 0.0 : static_cast<double>(single_nnz_columns) / nonempty_columns;
-    stats.low_nnz_column_ratio =
-        nonempty_columns == 0 ? 0.0 : static_cast<double>(low_nnz_columns) / nonempty_columns;
-
-    uint64_t cluster_row_alignment_padding = 0;
-    for (const ClusterInfo& cluster : inputs.clusters)
-        cluster_row_alignment_padding += (4 - (cluster.active_rows % 4)) % 4;
-    stats.cluster_row_alignment_ratio =
-        inputs.total_active_row_memberships == 0
-            ? 0.0
-            : static_cast<double>(cluster_row_alignment_padding) /
-                  inputs.total_active_row_memberships;
-
-    uint64_t draf_row_alignment_padding = 0;
-    for (const DrafClusterInfo& cluster : draf.clusters)
-        draf_row_alignment_padding += (4 - (cluster.draf_rows % 4)) % 4;
-    stats.draf_row_alignment_ratio =
-        draf.draf_rows == 0 ? 0.0
-                            : static_cast<double>(draf_row_alignment_padding) / draf.draf_rows;
-    stats.sampled_cluster_jaccard = sampledClusterJaccard(inputs);
-    stats.draf_padding_pressure =
-        min(1.0, 0.50 * normalizeRatio(draf.expansion_ratio, 8.0) +
-                     0.25 * stats.single_nnz_column_ratio +
-                     0.25 * stats.low_nnz_column_ratio);
-
-    double row_skew = 0.5 * stats.row_nnz_gini +
-                      0.5 * normalizeRatio(stats.max_row_nnz_over_mean, 128.0);
-    double col_skew = 0.5 * stats.col_nnz_gini +
-                      0.5 * normalizeRatio(stats.max_col_nnz_over_mean, 128.0);
-    double bga_skew = 0.5 * normalizeRatio(stats.bga_partials_imbalance, 16.0) +
-                      0.5 * normalizeRatio(stats.bga_unique_rows_imbalance, 16.0);
-    double hot_skew = min(1.0, stats.hot_top1pct_row_nnz_ratio * 2.0);
-    stats.skew_score = min(1.0, 0.30 * row_skew + 0.20 * col_skew + 0.30 * bga_skew +
-                                    0.20 * hot_skew);
-    return stats;
-}
-
-DrafCriticalPathStats buildDrafCriticalPathStats(const DrafStats& draf)
-{
-    DrafCriticalPathStats stats;
-    constexpr double kLogicalBanksPerBankGroup = 2.0;
-    vector<uint64_t> actual_group_steps;
-
-    for (const DrafClusterInfo& cluster : draf.clusters)
-    {
-        if (cluster.column_groups == 0)
-            continue;
-
-        double actual_group_step =
-            ceil(static_cast<double>(cluster.column_groups) / kLogicalBanksPerBankGroup);
-        double ideal_column_groups =
-            static_cast<double>(cluster.nnz) / static_cast<double>(kDrafNzesPerColumnGroup);
-        double ideal_group_step = ideal_column_groups / kLogicalBanksPerBankGroup;
-
-        stats.actual_steps += actual_group_step;
-        stats.ideal_steps += ideal_group_step;
-        stats.critical_padding += max(0.0, actual_group_step - ideal_group_step);
-        actual_group_steps.push_back(static_cast<uint64_t>(ceil(actual_group_step)));
-    }
-
-    stats.critical_padding_ratio =
-        stats.ideal_steps == 0.0 ? 0.0 : stats.critical_padding / stats.ideal_steps;
-    stats.group_steps_mean = meanOf(actual_group_steps);
-    stats.group_steps_max = actual_group_steps.empty()
-                                ? 0.0
-                                : static_cast<double>(
-                                      *max_element(actual_group_steps.begin(),
-                                                   actual_group_steps.end()));
-    stats.bg_imbalance =
-        stats.group_steps_mean == 0.0 ? 0.0 : stats.group_steps_max / stats.group_steps_mean;
-    return stats;
-}
-
-DrafPaddingExposureStats buildDrafPaddingExposureStats(const DrafStats& draf,
-                                                       const ShapeStats& shape,
-                                                       const DrafCriticalPathStats& critical)
-{
-    DrafPaddingExposureStats stats;
-    stats.total_padding_steps =
-        static_cast<double>(draf.nze_padding) / static_cast<double>(kElementsPerBurst);
-    stats.critical_padding_steps = critical.critical_padding;
-    stats.hidden_padding_steps =
-        max(0.0, stats.total_padding_steps - stats.critical_padding_steps);
-    stats.fragmentation = max(shape.single_nnz_column_ratio, shape.low_nnz_column_ratio);
-    stats.memory_pressure = clamp01((draf.expansion_ratio - 1.0) / 4.0);
-    stats.imbalance_pressure = clamp01((critical.bg_imbalance - 1.0) / 3.0);
-    stats.exposure_factor =
-        clamp01(0.6 * stats.fragmentation + 0.3 * stats.memory_pressure +
-                0.1 * stats.imbalance_pressure);
-    stats.exposed_hidden_padding = stats.hidden_padding_steps * stats.exposure_factor;
-    stats.effective_padding_steps =
-        stats.critical_padding_steps + stats.exposed_hidden_padding;
-    return stats;
-}
-
-BgaOverlapStats buildBgaOverlapStats(uint64_t raw_bga_accumulate_cycle,
-                                     uint64_t compute_overlap_window,
-                                     const ShapeStats& shape,
-                                     const DrafPaddingExposureStats& exposure)
-{
-    BgaOverlapStats stats;
-    stats.raw_accumulate_cycle = raw_bga_accumulate_cycle;
-    stats.regularity_score =
-        clamp01(1.0 - max(exposure.fragmentation, exposure.memory_pressure));
-    stats.reuse_score = clamp01(shape.bga_reduction_ratio);
-    stats.padding_guard = clamp01(1.0 - exposure.exposure_factor);
-
-    /*
-     * V6 treats BGA accumulation as an internal pipeline that can be partially hidden by
-     * DRAF compute slots. The overlap is intentionally guarded by DRAF fragmentation and
-     * memory expansion, so padding-dominated workloads do not receive the same benefit as
-     * regular/high-reuse matrices.
-     */
-    stats.overlap_factor =
-        clamp01(0.10 + 0.60 * stats.regularity_score * stats.padding_guard +
-                0.30 * stats.regularity_score * stats.reuse_score);
-    uint64_t candidate_hidden_cycle = static_cast<uint64_t>(
-        floor(static_cast<double>(raw_bga_accumulate_cycle) * stats.overlap_factor));
-    stats.hidden_accumulate_cycle = min(candidate_hidden_cycle, compute_overlap_window);
-    stats.exposed_accumulate_cycle =
-        raw_bga_accumulate_cycle > stats.hidden_accumulate_cycle
-            ? raw_bga_accumulate_cycle - stats.hidden_accumulate_cycle
-            : 0;
-    return stats;
 }
 
 class ClusteredSpmvBenchFixture : public testing::Test
@@ -1264,6 +754,8 @@ class ClusteredSpmvBenchFixture : public testing::Test
     void runDrafBgaModel(const string& base, const string& input_name,
                          bool conservative_model = false, bool v2_model = false,
                          bool v21_model = false);
+    StructuralBaseTiming runDrafBgaStructuralBaseTiming(const DrafStats& draf,
+                                                        const BgaStats& bga);
     StructuralModelResult runDrafBgaStructuralModel(const string& base,
                                                     const string& input_name,
                                                     const string& matrix_name,
@@ -2039,6 +1531,82 @@ void ClusteredSpmvBenchFixture::runGuidedKmeansDrafBgaSuite(bool conservative_mo
     }
 }
 
+StructuralBaseTiming ClusteredSpmvBenchFixture::runDrafBgaStructuralBaseTiming(
+    const DrafStats& draf, const BgaStats& bga)
+{
+    StructuralBaseTiming timing;
+    BurstType null_bst;
+    vector<PIMCmd> mac_cmds{
+        PIMCmd(PIMCmdType::MAC, PIMOpdType::GRF_B, PIMOpdType::GRF_A, PIMOpdType::EVEN_BANK, 1),
+        PIMCmd(PIMCmdType::MAC, PIMOpdType::GRF_B, PIMOpdType::GRF_A, PIMOpdType::ODD_BANK, 1),
+        PIMCmd(PIMCmdType::NOP, 7),
+        PIMCmd(PIMCmdType::EXIT, 0),
+    };
+
+    kernel_->configurePIMControl();
+    kernel_->parkIn();
+    kernel_->changePIMMode(dramMode::SB, dramMode::HAB);
+    kernel_->programCrf(mac_cmds);
+    timing.setup_cycle = drain(*kernel_);
+
+    vector<char> draf_channels(kernel_->num_pim_chans_, 0);
+    uint64_t global_draf_row = 0;
+    for (const DrafClusterInfo& cluster : draf.clusters)
+    {
+        unsigned chan = cluster.id / 4;
+        draf_channels[chan] = cluster.draf_rows > 0 ? 1 : draf_channels[chan];
+        for (uint64_t i = 0; i < cluster.draf_rows; ++i, ++global_draf_row)
+        {
+            unsigned row = kMacBaseRow + (global_draf_row / 32);
+            unsigned col = global_draf_row % 32;
+            addTx(mem_, *kernel_->pim_addr_mgr_, false, chan, 0, 0, row, col, &null_bst);
+        }
+    }
+    addPhaseBarriers(mem_, draf_channels);
+    timing.draf_row_fetch_cycle = drain(*kernel_);
+
+    kernel_->changePIMMode(dramMode::HAB, dramMode::HAB_PIM);
+    timing.pim_enable_cycle = drain(*kernel_);
+
+    global_draf_row = 0;
+    for (const DrafClusterInfo& cluster : draf.clusters)
+    {
+        unsigned chan = cluster.id / 4;
+        for (uint64_t i = 0; i < cluster.draf_rows; ++i, ++global_draf_row)
+        {
+            unsigned row = kMacBaseRow + (global_draf_row / 32);
+            unsigned col = global_draf_row % 32;
+            addTx(mem_, *kernel_->pim_addr_mgr_, false, chan, 0, i % 2, row, col, &null_bst);
+        }
+    }
+    addPhaseBarriers(mem_, draf_channels);
+    timing.draf_compute_trigger_cycle = drain(*kernel_);
+
+    kernel_->changePIMMode(dramMode::HAB_PIM, dramMode::HAB);
+    timing.pim_disable_cycle = drain(*kernel_);
+    kernel_->changePIMMode(dramMode::HAB, dramMode::SB);
+    timing.pim_to_sb_cycle = drain(*kernel_);
+
+    vector<char> bga_channels(kernel_->num_pim_chans_, 0);
+    for (const BgaGroupInfo& group : bga.groups)
+        bga_channels[group.channel] = 1;
+    for (size_t group_idx = 0; group_idx < bga.groups.size(); ++group_idx)
+    {
+        const BgaGroupInfo& group = bga.groups[group_idx];
+        uint64_t readback_tx = ceilDiv(group.partials_after, kElementsPerBurst);
+        for (uint64_t i = 0; i < readback_tx; ++i)
+        {
+            unsigned row = kResultReadBaseRow + static_cast<unsigned>(group_idx * 16 + (i / 32));
+            unsigned col = i % 32;
+            addTx(mem_, *kernel_->pim_addr_mgr_, false, group.channel, 0, 0, row, col,
+                  &null_bst);
+        }
+    }
+    addPhaseBarriers(mem_, bga_channels);
+    timing.bga_output_readback_cycle = drain(*kernel_);
+    return timing;
+}
+
 StructuralModelResult ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(
     const string& base, const string& input_name, const string& matrix_name,
     int structural_variant)
@@ -2053,27 +1621,21 @@ StructuralModelResult ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(
     DrafCriticalPathStats critical = buildDrafCriticalPathStats(draf);
     DrafPaddingExposureStats exposure =
         buildDrafPaddingExposureStats(draf, shape, critical);
-    bool critical_padding_model = structural_variant >= 4;
-    bool exposure_padding_model = structural_variant >= 5;
-    bool bga_overlap_model = structural_variant >= 6;
-
-    BurstType null_bst;
-    vector<PIMCmd> mac_cmds{
-        PIMCmd(PIMCmdType::MAC, PIMOpdType::GRF_B, PIMOpdType::GRF_A, PIMOpdType::EVEN_BANK, 1),
-        PIMCmd(PIMCmdType::MAC, PIMOpdType::GRF_B, PIMOpdType::GRF_A, PIMOpdType::ODD_BANK, 1),
-        PIMCmd(PIMCmdType::NOP, 7),
-        PIMCmd(PIMCmdType::EXIT, 0),
-    };
+    const StructuralVariantSpec& variant_spec = structuralVariantSpec(structural_variant);
+    bool phase_exposure_model = variant_spec.phase_exposure;
+    bool critical_padding_model = variant_spec.critical_padding;
+    bool exposure_padding_model = variant_spec.exposure_padding;
+    bool bga_overlap_model = variant_spec.bga_overlap;
+    bool draf_streaming_overlap_model = variant_spec.draf_streaming_overlap;
+    bool draf_bga_budget_model = variant_spec.draf_bga_budget;
+    bool reuse_aware_bga_model = variant_spec.reuse_aware_bga;
+    bool draf_memory_efficiency_model = variant_spec.draf_memory_efficiency;
+    bool conservative_overlap_reuse_model = variant_spec.conservative_overlap_reuse;
+    bool stronger_draf_memory_conservative_model =
+        variant_spec.stronger_draf_memory_conservative;
 
     cout << ">>DRAF+BGA-aware SpMV ";
-    if (bga_overlap_model)
-        cout << "V6 BGA-Overlap Structural Model";
-    else if (exposure_padding_model)
-        cout << "V5 Exposure Structural Model";
-    else if (critical_padding_model)
-        cout << "V4 Critical-Path Structural Model";
-    else
-        cout << "V3 Structural Model";
+    cout << variant_spec.model_banner;
     cout << endl;
     cout << "  input: " << input_name << endl;
     cout << "  matrix: " << matrix_name << endl;
@@ -2094,6 +1656,13 @@ StructuralModelResult ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(
     cout << "  critical_padding_ratio: " << critical.critical_padding_ratio << endl;
     cout << "  group_steps_mean: " << critical.group_steps_mean << endl;
     cout << "  group_steps_max: " << critical.group_steps_max << endl;
+    cout << "  group_steps_p90: " << critical.group_steps_p90 << endl;
+    cout << "  group_steps_p95: " << critical.group_steps_p95 << endl;
+    cout << "  tail_skew_max_over_p90: " << critical.tail_skew_max_over_p90 << endl;
+    cout << "  tail_skew_max_over_p95: " << critical.tail_skew_max_over_p95 << endl;
+    cout << "  p90_to_max_tail_steps: " << critical.p90_to_max_tail_steps << endl;
+    cout << "  p95_to_max_tail_steps: " << critical.p95_to_max_tail_steps << endl;
+    cout << "  tail_exposure_ratio: " << critical.tail_exposure_ratio << endl;
     cout << "  bg_imbalance: " << critical.bg_imbalance << endl;
     cout << "  total_padding_steps: " << exposure.total_padding_steps << endl;
     cout << "  hidden_padding_steps: " << exposure.hidden_padding_steps << endl;
@@ -2108,72 +1677,88 @@ StructuralModelResult ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(
     cout << "  draf_padding_pressure: " << shape.draf_padding_pressure << endl;
     cout << "  bga_reduction_ratio: " << shape.bga_reduction_ratio << endl;
 
-    kernel_->configurePIMControl();
-    kernel_->parkIn();
-    kernel_->changePIMMode(dramMode::SB, dramMode::HAB);
-    kernel_->programCrf(mac_cmds);
-    uint64_t setup_cycle = drain(*kernel_);
+    StructuralBaseTiming timing = runDrafBgaStructuralBaseTiming(draf, bga);
+    uint64_t setup_cycle = timing.setup_cycle;
+    uint64_t draf_row_fetch_cycle = timing.draf_row_fetch_cycle;
+    uint64_t pim_enable_cycle = timing.pim_enable_cycle;
+    uint64_t draf_compute_trigger_cycle = timing.draf_compute_trigger_cycle;
 
-    vector<char> draf_channels(kernel_->num_pim_chans_, 0);
-    uint64_t global_draf_row = 0;
-    for (const DrafClusterInfo& cluster : draf.clusters)
+    double tck_ns = getConfigParam(FLOAT, "tCK");
+    double gpu_ms = gpuBaselineMs(matrix_name);
+    double target_speedup = paperTargetSpeedup(matrix_name);
+    if (variant_spec.id == 14)
     {
-        unsigned chan = cluster.id / 4;
-        draf_channels[chan] = cluster.draf_rows > 0 ? 1 : draf_channels[chan];
-        for (uint64_t i = 0; i < cluster.draf_rows; ++i, ++global_draf_row)
-        {
-            unsigned row = kMacBaseRow + (global_draf_row / 32);
-            unsigned col = global_draf_row % 32;
-            addTx(mem_, *kernel_->pim_addr_mgr_, false, chan, 0, 0, row, col, &null_bst);
-        }
+        return runDrafBgaStructuralModelV14(inputs, draf, bga, shape, critical,
+                                           exposure, timing, variant_spec,
+                                           matrix_name, gpu_ms, target_speedup,
+                                           tck_ns);
     }
-    addPhaseBarriers(mem_, draf_channels);
-    uint64_t draf_row_fetch_cycle = drain(*kernel_);
-
-    kernel_->changePIMMode(dramMode::HAB, dramMode::HAB_PIM);
-    uint64_t pim_enable_cycle = drain(*kernel_);
-
-    global_draf_row = 0;
-    for (const DrafClusterInfo& cluster : draf.clusters)
+    if (variant_spec.id == 15)
     {
-        unsigned chan = cluster.id / 4;
-        for (uint64_t i = 0; i < cluster.draf_rows; ++i, ++global_draf_row)
-        {
-            unsigned row = kMacBaseRow + (global_draf_row / 32);
-            unsigned col = global_draf_row % 32;
-            addTx(mem_, *kernel_->pim_addr_mgr_, false, chan, 0, i % 2, row, col, &null_bst);
-        }
+        return runDrafBgaStructuralModelV15(inputs, draf, bga, shape, critical,
+                                           exposure, timing, variant_spec,
+                                           matrix_name, gpu_ms, target_speedup,
+                                           tck_ns);
     }
-    addPhaseBarriers(mem_, draf_channels);
-    uint64_t draf_compute_trigger_cycle = drain(*kernel_);
 
     uint64_t bga_capacity_flushes =
         max(bga.max_estimated_flushes_per_group, bga.max_stream_capacity_flushes_per_group);
-    uint64_t raw_bga_accumulate_cycle =
+    uint64_t instruction_bga_accumulate_cycle =
         bga.max_bacc_instructions_per_group + kConservativeBgaFlushPenalty * bga_capacity_flushes;
-
-    kernel_->changePIMMode(dramMode::HAB_PIM, dramMode::HAB);
-    uint64_t pim_disable_cycle = drain(*kernel_);
-    kernel_->changePIMMode(dramMode::HAB, dramMode::SB);
-    uint64_t pim_to_sb_cycle = drain(*kernel_);
-
-    vector<char> bga_channels(kernel_->num_pim_chans_, 0);
-    for (const BgaGroupInfo& group : bga.groups)
-        bga_channels[group.channel] = 1;
-    for (size_t group_idx = 0; group_idx < bga.groups.size(); ++group_idx)
+    uint64_t reuse_aware_bga_accumulate_cycle =
+        bga.max_reuse_aware_accumulate_cycle_per_group;
+    double mean_nnz_per_col =
+        inputs.n_cols == 0
+            ? 0.0
+            : static_cast<double>(draf.nnz) / static_cast<double>(inputs.n_cols);
+    double instruction_phase_total =
+        static_cast<double>(instruction_bga_accumulate_cycle + draf_row_fetch_cycle +
+                            draf_compute_trigger_cycle) +
+        exposure.effective_padding_steps + 1.0;
+    double instruction_bga_share =
+        static_cast<double>(instruction_bga_accumulate_cycle) / instruction_phase_total;
+    double weak_reuse_serialization_guard =
+        clamp01(1.0 - (shape.bga_row_reuse_factor - 1.0) / 32.0);
+    double pre_phase_bga_score =
+        clamp01(0.55 * instruction_bga_share +
+                0.25 * clamp01(shape.bga_capacity_pressure / 16.0) +
+                0.20 * weak_reuse_serialization_guard);
+    double pre_phase_draf_score =
+        clamp01(0.45 * clamp01(draf.expansion_ratio - 1.0) +
+                0.30 * shape.draf_padding_pressure +
+                0.25 * clamp01(mean_nnz_per_col / 64.0));
+    double pre_phase_padding_score =
+        clamp01(0.50 * exposure.exposure_factor +
+                0.30 * critical.critical_padding_ratio +
+                0.20 * (1.0 - critical.tail_exposure_ratio));
+    double conservative_bga_floor_factor = 0.0;
+    if (phase_exposure_model)
     {
-        const BgaGroupInfo& group = bga.groups[group_idx];
-        uint64_t readback_tx = ceilDiv(group.partials_after, kElementsPerBurst);
-        for (uint64_t i = 0; i < readback_tx; ++i)
-        {
-            unsigned row = kResultReadBaseRow + static_cast<unsigned>(group_idx * 16 + (i / 32));
-            unsigned col = i % 32;
-            addTx(mem_, *kernel_->pim_addr_mgr_, false, group.channel, 0, 0, row, col,
-                  &null_bst);
-        }
+        double reuse_relief = clamp01((shape.bga_row_reuse_factor - 8.0) / 32.0);
+        conservative_bga_floor_factor =
+            clamp01(0.35 + 0.45 * pre_phase_bga_score +
+                    0.20 * pre_phase_padding_score - 0.25 * reuse_relief);
     }
-    addPhaseBarriers(mem_, bga_channels);
-    uint64_t bga_output_readback_cycle = drain(*kernel_);
+    else
+    {
+        conservative_bga_floor_factor =
+            stronger_draf_memory_conservative_model
+                ? 0.75
+                : (conservative_overlap_reuse_model ? 0.50 : 0.0);
+    }
+    uint64_t conservative_bga_floor_cycle =
+        static_cast<uint64_t>(ceil(conservative_bga_floor_factor *
+                                   static_cast<double>(instruction_bga_accumulate_cycle)));
+    if (conservative_overlap_reuse_model)
+        reuse_aware_bga_accumulate_cycle =
+            max(reuse_aware_bga_accumulate_cycle, conservative_bga_floor_cycle);
+    uint64_t raw_bga_accumulate_cycle =
+        reuse_aware_bga_model ? reuse_aware_bga_accumulate_cycle
+                              : instruction_bga_accumulate_cycle;
+
+    uint64_t pim_disable_cycle = timing.pim_disable_cycle;
+    uint64_t pim_to_sb_cycle = timing.pim_to_sb_cycle;
+    uint64_t bga_output_readback_cycle = timing.bga_output_readback_cycle;
 
     /*
      * V3 charges all padded NZE slots. V4 charges only the padding exposed on the synchronous
@@ -2181,7 +1766,14 @@ StructuralModelResult ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(
      * receive the same cost as useful nonzero work.
      */
     uint64_t padded_zero_compute_cycle = 0;
-    if (exposure_padding_model)
+    if (phase_exposure_model)
+    {
+        double tail_exposure_factor =
+            clamp01(0.55 + 0.45 * critical.tail_exposure_ratio);
+        padded_zero_compute_cycle = static_cast<uint64_t>(
+            ceil(exposure.effective_padding_steps * tail_exposure_factor));
+    }
+    else if (exposure_padding_model)
     {
         padded_zero_compute_cycle =
             static_cast<uint64_t>(ceil(exposure.effective_padding_steps));
@@ -2198,20 +1790,129 @@ StructuralModelResult ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(
     uint64_t compute_overlap_window = draf_compute_trigger_cycle + padded_zero_compute_cycle;
     BgaOverlapStats bga_overlap =
         buildBgaOverlapStats(raw_bga_accumulate_cycle, compute_overlap_window, shape, exposure);
+    uint64_t bga_hidden_accumulate_cycle =
+        bga_overlap_model ? bga_overlap.hidden_accumulate_cycle : 0;
     uint64_t bga_accumulate_cycle =
-        bga_overlap_model ? bga_overlap.exposed_accumulate_cycle : raw_bga_accumulate_cycle;
+        raw_bga_accumulate_cycle > bga_hidden_accumulate_cycle
+            ? raw_bga_accumulate_cycle - bga_hidden_accumulate_cycle
+            : 0;
     uint64_t final_reduce_cycle = ceilDiv(bga.host_reduce_ops_after_bga,
                                           kConservativeHostReduceWidth);
-    uint64_t v3_total_cycle =
+    uint64_t pre_streaming_total_cycle =
         setup_cycle + draf_row_fetch_cycle + pim_enable_cycle + draf_compute_trigger_cycle +
         padded_zero_compute_cycle + bga_accumulate_cycle + pim_disable_cycle + pim_to_sb_cycle +
         bga_output_readback_cycle + final_reduce_cycle;
+    DrafStreamingOverlapStats draf_streaming =
+        buildDrafStreamingOverlapStats(draf_row_fetch_cycle, draf_compute_trigger_cycle,
+                                       pre_streaming_total_cycle, compute_overlap_window,
+                                       exposure, bga_overlap, draf_bga_budget_model);
+    uint64_t draf_stream_hidden_cycle =
+        draf_streaming_overlap_model ? draf_streaming.hidden_access_cycle : 0;
+    double bga_bound_score = pre_phase_bga_score;
+    double draf_access_bound_score = pre_phase_draf_score;
+    double padding_sync_bound_score = pre_phase_padding_score;
+    double phase_class_code = 0.0;
+    uint64_t shared_overlap_window_cycle = 0;
+    uint64_t shared_bga_overlap_cycle = bga_hidden_accumulate_cycle;
+    uint64_t shared_draf_overlap_cycle = draf_stream_hidden_cycle;
+    if (phase_exposure_model)
+    {
+        uint64_t bga_demand = bga_overlap.hidden_accumulate_cycle;
+        uint64_t draf_demand = draf_stream_hidden_cycle;
+        shared_overlap_window_cycle = compute_overlap_window;
+        if (bga_bound_score >= draf_access_bound_score &&
+            bga_bound_score >= padding_sync_bound_score)
+            phase_class_code = 1.0;
+        else if (draf_access_bound_score >= padding_sync_bound_score)
+            phase_class_code = 2.0;
+        else
+            phase_class_code = 3.0;
 
-    double tck_ns = getConfigParam(FLOAT, "tCK");
+        double bga_weight = 0.35 + bga_bound_score;
+        double draf_weight = 0.35 + draf_access_bound_score;
+        if (phase_class_code == 1.0)
+            bga_weight += 0.35;
+        else if (phase_class_code == 2.0)
+            draf_weight += 0.35;
+        double weight_sum = bga_weight + draf_weight;
+        uint64_t bga_budget = static_cast<uint64_t>(
+            floor(static_cast<double>(shared_overlap_window_cycle) *
+                  bga_weight / weight_sum));
+        shared_bga_overlap_cycle = min(bga_demand, bga_budget);
+        uint64_t remaining_window =
+            shared_overlap_window_cycle > shared_bga_overlap_cycle
+                ? shared_overlap_window_cycle - shared_bga_overlap_cycle
+                : 0;
+        shared_draf_overlap_cycle = min(draf_demand, remaining_window);
+        bga_hidden_accumulate_cycle = shared_bga_overlap_cycle;
+        draf_stream_hidden_cycle = shared_draf_overlap_cycle;
+        bga_accumulate_cycle =
+            raw_bga_accumulate_cycle > bga_hidden_accumulate_cycle
+                ? raw_bga_accumulate_cycle - bga_hidden_accumulate_cycle
+                : 0;
+        pre_streaming_total_cycle =
+            setup_cycle + draf_row_fetch_cycle + pim_enable_cycle +
+            draf_compute_trigger_cycle + padded_zero_compute_cycle + bga_accumulate_cycle +
+            pim_disable_cycle + pim_to_sb_cycle + bga_output_readback_cycle +
+            final_reduce_cycle;
+    }
+    uint64_t memory_bound_access_cycle = draf_row_fetch_cycle + draf_compute_trigger_cycle;
+    DrafMemoryEfficiencyStats draf_memory =
+        buildDrafMemoryEfficiencyStats(draf, exposure, memory_bound_access_cycle);
+    uint64_t draf_memory_saved_cycle =
+        draf_memory_efficiency_model ? draf_memory.saved_access_cycle : 0;
+    double draf_memory_long_stream_score = 0.0;
+    uint64_t draf_memory_padding_saved_cycle = 0;
+    if (stronger_draf_memory_conservative_model && draf_memory_efficiency_model)
+    {
+        /*
+         * DRAF's COO-index reduction also lowers sustained dummy/padding traffic once a long
+         * column stream is established. Keep this separate from the direct row-fetch/trigger
+         * saving so the overlap diagnostics can expose whether the gain comes from memory
+         * format efficiency or from optimistic phase hiding.
+         */
+        draf_memory_long_stream_score =
+            static_cast<double>(draf.draf_rows) /
+            (static_cast<double>(draf.draf_rows) + 32768.0);
+        draf_memory_padding_saved_cycle = static_cast<uint64_t>(
+            floor(static_cast<double>(padded_zero_compute_cycle) *
+                  draf_memory.exposed_saving_factor * draf_memory_long_stream_score));
+        draf_memory_saved_cycle += draf_memory_padding_saved_cycle;
+    }
+    uint64_t draf_step_tail_saved_cycle = 0;
+    double percentile_tail_exposure_factor =
+        phase_exposure_model ? clamp01(0.55 + 0.45 * critical.tail_exposure_ratio) : 1.0;
+    if (phase_exposure_model && draf_memory_efficiency_model)
+    {
+        double tail_reduction_factor =
+            draf_memory.exposed_saving_factor * (1.0 - percentile_tail_exposure_factor);
+        if (phase_class_code == 2.0)
+            tail_reduction_factor *= 1.5;
+        if (phase_class_code == 3.0)
+            tail_reduction_factor *= 0.5;
+        tail_reduction_factor = clamp01(tail_reduction_factor);
+        draf_step_tail_saved_cycle = static_cast<uint64_t>(
+            floor(static_cast<double>(draf_compute_trigger_cycle + padded_zero_compute_cycle) *
+                  tail_reduction_factor));
+        draf_memory_saved_cycle += draf_step_tail_saved_cycle;
+    }
+    uint64_t memory_budgeted_stream_hidden_cycle = draf_stream_hidden_cycle;
+    double stream_memory_budget_factor = 1.0;
+    if (conservative_overlap_reuse_model)
+    {
+        stream_memory_budget_factor = 1.0 - draf_memory.exposed_saving_factor;
+        if (stronger_draf_memory_conservative_model)
+            stream_memory_budget_factor *= 0.50;
+        memory_budgeted_stream_hidden_cycle = static_cast<uint64_t>(
+            floor(static_cast<double>(draf_stream_hidden_cycle) *
+                  stream_memory_budget_factor));
+    }
+    uint64_t hidden_cycle = memory_budgeted_stream_hidden_cycle + draf_memory_saved_cycle;
+    uint64_t v3_total_cycle =
+        pre_streaming_total_cycle > hidden_cycle ? pre_streaming_total_cycle - hidden_cycle : 0;
+
     double v3_total_ms = v3_total_cycle * tck_ns / 1000000.0;
-    double gpu_ms = gpuBaselineMs(matrix_name);
     double v3_speedup = v3_total_ms == 0.0 ? 0.0 : gpu_ms / v3_total_ms;
-    double target_speedup = paperTargetSpeedup(matrix_name);
     double target_pim_ms =
         target_speedup == 0.0 ? 0.0 : gpu_ms / target_speedup;
     StructuralModelResult result;
@@ -2245,11 +1946,64 @@ StructuralModelResult ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(
     result.exposed_hidden_padding = exposure.exposed_hidden_padding;
     result.effective_padding_steps = exposure.effective_padding_steps;
     result.bga_raw_accumulate_cycle = raw_bga_accumulate_cycle;
-    result.bga_hidden_accumulate_cycle = bga_overlap.hidden_accumulate_cycle;
+    result.bga_hidden_accumulate_cycle = bga_hidden_accumulate_cycle;
     result.bga_regularity_score = bga_overlap.regularity_score;
     result.bga_reuse_score = bga_overlap.reuse_score;
     result.bga_padding_guard = bga_overlap.padding_guard;
     result.bga_overlap_factor = bga_overlap.overlap_factor;
+    result.draf_stream_hidden_cycle = draf_stream_hidden_cycle;
+    result.draf_stream_regularity_score = draf_streaming.regularity_score;
+    result.draf_stream_guard_score = draf_streaming.guard_score;
+    result.draf_access_share = draf_streaming.access_share;
+    result.draf_stream_overlap_factor = draf_streaming.overlap_factor;
+    result.draf_bga_window_occupancy = draf_streaming.bga_window_occupancy;
+    result.draf_bga_contention_score = draf_streaming.bga_contention_score;
+    result.draf_stream_budget_factor = draf_streaming.budget_factor;
+    result.row_nnz_gini = shape.row_nnz_gini;
+    result.col_nnz_gini = shape.col_nnz_gini;
+    result.mean_nnz_per_col = mean_nnz_per_col;
+    result.single_nnz_column_ratio = shape.single_nnz_column_ratio;
+    result.low_nnz_column_ratio = shape.low_nnz_column_ratio;
+    result.bga_row_reuse_factor = shape.bga_row_reuse_factor;
+    result.bga_unique_row_ratio = shape.bga_unique_row_ratio;
+    result.bga_duplicate_partial_ratio = shape.bga_duplicate_partial_ratio;
+    result.bga_near_duplicate_partial_ratio = bga.near_duplicate_partial_ratio;
+    result.bga_far_duplicate_partial_ratio = bga.far_duplicate_partial_ratio;
+    result.bga_near_duplicate_share = bga.near_duplicate_share;
+    result.accumulator_flush_estimate = bga.accumulator_flush_estimate;
+    result.bga_capacity_pressure = shape.bga_capacity_pressure;
+    result.bga_stream_capacity_flushes = bga.max_stream_capacity_flushes_per_group;
+    result.bga_critical_flushes =
+        reuse_aware_bga_model ? bga.max_stream_capacity_flushes_per_group : bga_capacity_flushes;
+    result.bga_reuse_aware_accumulate_cycle = reuse_aware_bga_accumulate_cycle;
+    result.draf_memory_saved_cycle = draf_memory_saved_cycle;
+    result.draf_coo_bytes_per_nnz = draf_memory.coo_bytes_per_nnz;
+    result.draf_bytes_per_nnz = draf_memory.draf_bytes_per_nnz;
+    result.draf_vs_coo_memory_ratio = draf_memory.draf_vs_coo_ratio;
+    result.draf_memory_saving_factor = draf_memory.memory_saving_factor;
+    result.draf_exposed_memory_saving_factor = draf_memory.exposed_saving_factor;
+    result.conservative_bga_floor_cycle = conservative_bga_floor_cycle;
+    result.memory_budgeted_stream_hidden_cycle = memory_budgeted_stream_hidden_cycle;
+    result.draf_memory_padding_saved_cycle = draf_memory_padding_saved_cycle;
+    result.draf_memory_long_stream_score = draf_memory_long_stream_score;
+    result.conservative_bga_floor_factor = conservative_bga_floor_factor;
+    result.stream_memory_budget_factor = stream_memory_budget_factor;
+    result.phase_class_code = phase_class_code;
+    result.bga_bound_score = bga_bound_score;
+    result.draf_access_bound_score = draf_access_bound_score;
+    result.padding_sync_bound_score = padding_sync_bound_score;
+    result.percentile_tail_exposure_factor = percentile_tail_exposure_factor;
+    result.group_steps_p90 = critical.group_steps_p90;
+    result.group_steps_p95 = critical.group_steps_p95;
+    result.group_steps_max = critical.group_steps_max;
+    result.tail_skew_max_over_p90 = critical.tail_skew_max_over_p90;
+    result.tail_skew_max_over_p95 = critical.tail_skew_max_over_p95;
+    result.p90_to_max_tail_steps = critical.p90_to_max_tail_steps;
+    result.p95_to_max_tail_steps = critical.p95_to_max_tail_steps;
+    result.shared_overlap_window_cycle = shared_overlap_window_cycle;
+    result.shared_bga_overlap_cycle = shared_bga_overlap_cycle;
+    result.shared_draf_overlap_cycle = shared_draf_overlap_cycle;
+    result.draf_step_tail_saved_cycle = draf_step_tail_saved_cycle;
 
     cout << "  latency_scope: setup + DRAF access + "
          << (exposure_padding_model
@@ -2286,39 +2040,75 @@ StructuralModelResult ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(
     cout << endl;
     cout << "> bga_accumulate_cycle: " << bga_accumulate_cycle
          << " raw_bga_accumulate_cycle=" << raw_bga_accumulate_cycle
-         << " hidden_bga_accumulate_cycle=" << bga_overlap.hidden_accumulate_cycle
+         << " hidden_bga_accumulate_cycle=" << bga_hidden_accumulate_cycle
          << " bga_overlap_factor=" << bga_overlap.overlap_factor
          << " bga_regularity_score=" << bga_overlap.regularity_score
          << " bga_reuse_score=" << bga_overlap.reuse_score
          << " bga_padding_guard=" << bga_overlap.padding_guard
          << " max_bacc_per_group=" << bga.max_bacc_instructions_per_group
+         << " reuse_aware_bga_cycle=" << reuse_aware_bga_accumulate_cycle
+         << " conservative_bga_floor_cycle=" << conservative_bga_floor_cycle
+         << " conservative_bga_floor_factor=" << conservative_bga_floor_factor
+         << " bga_row_reuse_factor=" << shape.bga_row_reuse_factor
+         << " bga_unique_row_ratio=" << shape.bga_unique_row_ratio
+         << " bga_duplicate_partial_ratio=" << shape.bga_duplicate_partial_ratio
+         << " near_duplicate_partial_ratio=" << bga.near_duplicate_partial_ratio
+         << " far_duplicate_partial_ratio=" << bga.far_duplicate_partial_ratio
+         << " near_duplicate_share=" << bga.near_duplicate_share
+         << " accumulator_flush_estimate=" << bga.accumulator_flush_estimate
          << " selected_flushes_per_group=" << bga_capacity_flushes
          << " flush_penalty=" << kConservativeBgaFlushPenalty << endl;
     cout << "> bga_output_readback_cycle: " << bga_output_readback_cycle << endl;
     cout << "> final_reduce_cycle: " << final_reduce_cycle << endl;
-    cout << "> "
-         << (exposure_padding_model
-                 ? (bga_overlap_model ? "v6_structural_cycle: "
-                                      : "v5_structural_cycle: ")
-                 : (critical_padding_model ? "v4_structural_cycle: "
-                                           : "v3_structural_cycle: "))
-         << v3_total_cycle
+    cout << "> draf_stream_hidden_cycle: " << draf_stream_hidden_cycle
+         << " draf_stream_overlap_factor=" << draf_streaming.overlap_factor
+         << " draf_stream_regularity_score=" << draf_streaming.regularity_score
+         << " draf_stream_guard_score=" << draf_streaming.guard_score
+         << " draf_access_share=" << draf_streaming.access_share
+         << " draf_bga_window_occupancy=" << draf_streaming.bga_window_occupancy
+         << " draf_bga_contention_score=" << draf_streaming.bga_contention_score
+         << " draf_stream_budget_factor=" << draf_streaming.budget_factor
+         << " stream_memory_budget_factor=" << stream_memory_budget_factor
+         << " memory_budgeted_stream_hidden_cycle="
+         << memory_budgeted_stream_hidden_cycle << endl;
+    cout << "> draf_memory_saved_cycle: " << draf_memory_saved_cycle
+         << " draf_memory_padding_saved_cycle=" << draf_memory_padding_saved_cycle
+         << " draf_memory_long_stream_score=" << draf_memory_long_stream_score
+         << " draf_vs_coo_memory_ratio=" << draf_memory.draf_vs_coo_ratio
+         << " draf_memory_saving_factor=" << draf_memory.memory_saving_factor
+         << " draf_exposed_memory_saving_factor=" << draf_memory.exposed_saving_factor
+         << " draf_bytes_per_nnz=" << draf_memory.draf_bytes_per_nnz
+         << " coo_bytes_per_nnz=" << draf_memory.coo_bytes_per_nnz << endl;
+    if (phase_exposure_model)
+    {
+        cout << "> phase_exposure_class: " << phase_class_code
+             << " bga_bound_score=" << bga_bound_score
+             << " draf_access_bound_score=" << draf_access_bound_score
+             << " padding_sync_bound_score=" << padding_sync_bound_score
+             << " percentile_tail_exposure_factor="
+             << percentile_tail_exposure_factor
+             << " group_steps_p90=" << critical.group_steps_p90
+             << " group_steps_p95=" << critical.group_steps_p95
+             << " group_steps_max=" << critical.group_steps_max
+             << " tail_skew_max_over_p90=" << critical.tail_skew_max_over_p90
+             << " tail_skew_max_over_p95=" << critical.tail_skew_max_over_p95
+             << " p90_to_max_tail_steps=" << critical.p90_to_max_tail_steps
+             << " p95_to_max_tail_steps=" << critical.p95_to_max_tail_steps
+             << " shared_overlap_window_cycle=" << shared_overlap_window_cycle
+             << " shared_bga_overlap_cycle=" << shared_bga_overlap_cycle
+             << " shared_draf_overlap_cycle=" << shared_draf_overlap_cycle
+             << " draf_step_tail_saved_cycle=" << draf_step_tail_saved_cycle
+             << endl;
+    }
+    cout << "> " << variant_spec.cycle_label << v3_total_cycle
          << " ms=" << v3_total_ms << endl;
     cout << "> gpu_baseline_ms: " << gpu_ms << endl;
     cout << "> paper_target_speedup: " << target_speedup
          << " target_pim_ms=" << target_pim_ms << endl;
-    cout << "> "
-         << (exposure_padding_model
-                 ? (bga_overlap_model ? "v6_structural_speedup: "
-                                      : "v5_structural_speedup: ")
-                 : (critical_padding_model ? "v4_structural_speedup: "
-                                           : "v3_structural_speedup: "))
-         << v3_speedup
+    cout << "> " << variant_spec.speedup_label << v3_speedup
          << " speedup_error_ratio="
          << (target_speedup == 0.0 ? 0.0 : v3_speedup / target_speedup) << endl;
-    cout << (exposure_padding_model
-                 ? (bga_overlap_model ? "V6_RESULT_CSV," : "V5_RESULT_CSV,")
-                 : (critical_padding_model ? "V4_RESULT_CSV," : "V3_RESULT_CSV,"))
+    cout << variant_spec.result_csv_tag
          << matrix_name << "," << gpu_ms << "," << target_speedup << "," << target_pim_ms
          << "," << v3_total_ms << "," << v3_speedup << ","
          << (target_speedup == 0.0 ? 0.0 : v3_speedup / target_speedup) << ","
@@ -2330,9 +2120,47 @@ StructuralModelResult ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(
          << exposure.fragmentation << "," << exposure.memory_pressure << ","
          << exposure.imbalance_pressure << "," << exposure.exposure_factor << ","
          << exposure.exposed_hidden_padding << "," << exposure.effective_padding_steps
-         << "," << raw_bga_accumulate_cycle << "," << bga_overlap.hidden_accumulate_cycle
+         << "," << raw_bga_accumulate_cycle << "," << bga_hidden_accumulate_cycle
          << "," << bga_overlap.regularity_score << "," << bga_overlap.reuse_score
          << "," << bga_overlap.padding_guard << "," << bga_overlap.overlap_factor
+         << "," << draf_stream_hidden_cycle << "," << draf_streaming.regularity_score
+         << "," << draf_streaming.guard_score << "," << draf_streaming.access_share
+         << "," << draf_streaming.overlap_factor
+         << "," << draf_streaming.bga_window_occupancy
+         << "," << draf_streaming.bga_contention_score
+         << "," << draf_streaming.budget_factor
+         << "," << bga.near_duplicate_partial_ratio
+         << "," << bga.far_duplicate_partial_ratio
+         << "," << bga.near_duplicate_share
+         << "," << bga.accumulator_flush_estimate
+         << "," << draf_memory_saved_cycle
+         << "," << draf_memory.coo_bytes_per_nnz
+         << "," << draf_memory.draf_bytes_per_nnz
+         << "," << draf_memory.draf_vs_coo_ratio
+         << "," << draf_memory.memory_saving_factor
+         << "," << draf_memory.exposed_saving_factor
+         << "," << conservative_bga_floor_cycle
+         << "," << memory_budgeted_stream_hidden_cycle
+         << "," << draf_memory_padding_saved_cycle
+         << "," << draf_memory_long_stream_score
+         << "," << conservative_bga_floor_factor
+         << "," << stream_memory_budget_factor
+         << "," << phase_class_code
+         << "," << bga_bound_score
+         << "," << draf_access_bound_score
+         << "," << padding_sync_bound_score
+         << "," << percentile_tail_exposure_factor
+         << "," << critical.group_steps_p90
+         << "," << critical.group_steps_p95
+         << "," << critical.group_steps_max
+         << "," << critical.tail_skew_max_over_p90
+         << "," << critical.tail_skew_max_over_p95
+         << "," << critical.p90_to_max_tail_steps
+         << "," << critical.p95_to_max_tail_steps
+         << "," << shared_overlap_window_cycle
+         << "," << shared_bga_overlap_cycle
+         << "," << shared_draf_overlap_cycle
+         << "," << draf_step_tail_saved_cycle
          << endl;
     return result;
 }
@@ -2360,15 +2188,9 @@ void ClusteredSpmvBenchFixture::runGuidedKmeansDrafBgaStructuralSuite(
     };
 
     string only_matrix = envString("SPMV_BENCH_MATRIX");
+    const StructuralVariantSpec& variant_spec = structuralVariantSpec(structural_variant);
     cout << ">>Guided K-means COO DRAF+BGA ";
-    if (structural_variant >= 6)
-        cout << "V6 BGA-overlap structural suite";
-    else if (structural_variant >= 5)
-        cout << "V5 exposure structural suite";
-    else if (structural_variant >= 4)
-        cout << "V4 critical-path structural suite";
-    else
-        cout << "V3 structural suite";
+    cout << variant_spec.suite_label;
     cout << endl;
     if (!only_matrix.empty())
         cout << "  SPMV_BENCH_MATRIX: " << only_matrix << endl;
@@ -2397,10 +2219,13 @@ void ClusteredSpmvBenchFixture::runGuidedKmeansDrafBgaStructuralSuite(
     {
         writeStructuralResults(structural_variant, results);
         writeStructuralDiagnostics(structural_variant, results);
+        writeStructuralResidualAnalysis(structural_variant, results);
         cout << "  wrote_structural_results: "
              << structuralResultPath(structural_variant) << endl;
         cout << "  wrote_phase_diagnostics: "
              << structuralDiagnosticPath(structural_variant) << endl;
+        cout << "  wrote_residual_features: "
+             << structuralResidualPath(structural_variant) << endl;
     }
 }
 
@@ -2475,4 +2300,54 @@ TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v5_struct
 TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v6_structural_model)
 {
     runGuidedKmeansDrafBgaStructuralSuite(6);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v7_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(7);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v8_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(8);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v9_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(9);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v10_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(10);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v11_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(11);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v12_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(12);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v13_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(13);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v14_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(14);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v15_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(15);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v4_draf_memory_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(104);
 }
