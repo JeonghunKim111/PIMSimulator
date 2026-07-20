@@ -17,25 +17,25 @@ not only the PIM compute phase.
 
 ## Workload Mapping
 
-| Workload | Matrix | Paper GPU Baseline Speedup |
-| --- | --- | ---: |
-| w1 | cant | 2.2x |
-| w2 | crankseg_2 | 3.0x |
-| w3 | lhr71 | 1.8x |
-| w4 | pdb1HYS | 5.4x |
-| w5 | rma10 | 2.3x |
-| w6 | soc-sign-epinions | 1.2x |
-| w7 | Stanford | 1.3x |
-| w8 | bcsstk32 | 2.0x |
-| w9 | consph | 2.3x |
-| w10 | ct20stif | 2.1x |
-| w11 | ohne2 | 3.2x |
-| w12 | pwtk | 3.6x |
-| w13 | shipsec1 | 2.1x |
-| w14 | ASIC_100k | 1.4x |
-| w15 | xenon2 | 5.6x |
-| w16 | webbase-1M | 0.7x |
-| GMean | Geometric Mean | 2.16x |
+| Workload | Matrix | GPU Baseline (ms) | Paper GPU Baseline Speedup |
+| --- | --- | ---: | ---: |
+| w1 | cant | 2.388768 | 2.2x |
+| w2 | crankseg_2 | 9.807726 | 3.0x |
+| w3 | lhr71 | 1.90591 | 1.8x |
+| w4 | pdb1HYS | 5.907898 | 5.4x |
+| w5 | rma10 | 2.682394 | 2.3x |
+| w6 | soc-sign-epinions | 1.187932 | 1.2x |
+| w7 | Stanford | 3.311456 | 1.3x |
+| w8 | bcsstk32 | 1.1594 | 2.0x |
+| w9 | consph | 3.705472 | 2.3x |
+| w10 | ct20stif | 1.673094 | 2.1x |
+| w11 | ohne2 | 18.24784 | 3.2x |
+| w12 | pwtk | 11.52014 | 3.6x |
+| w13 | shipsec1 | 4.43507 | 2.1x |
+| w14 | ASIC_100k | 1.264486 | 1.4x |
+| w15 | xenon2 | 11.67992 | 5.6x |
+| w16 | webbase-1M | 5.887198 | 0.7x |
+| GMean | Geometric Mean | - | 2.16x |
 
 ## Immediate Modeling Concern
 

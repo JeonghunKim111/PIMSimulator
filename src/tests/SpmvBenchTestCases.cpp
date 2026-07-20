@@ -24,8 +24,16 @@
 #include "tests/SpmvDrafBgaStructuralTypes.h"
 #include "tests/SpmvDrafBgaStructuralCommon.h"
 #include "tests/SpmvDrafBgaStructuralVariants.h"
+#include "tests/SpmvDrafBgaStructuralBV1.h"
+#include "tests/SpmvDrafBgaStructuralBV2.h"
+#include "tests/SpmvDrafBgaStructuralBV3.h"
+#include "tests/SpmvDrafBgaStructuralBV4.h"
 #include "tests/SpmvDrafBgaStructuralV14.h"
 #include "tests/SpmvDrafBgaStructuralV15.h"
+#include "tests/SpmvDrafBgaStructuralV16.h"
+#include "tests/SpmvDrafBgaStructuralV17.h"
+#include "tests/SpmvDrafBgaStructuralV17_1.h"
+#include "tests/SpmvDrafBgaStructuralV18.h"
 
 using namespace DRAMSim;
 using namespace spmv;
@@ -159,23 +167,25 @@ double paperTargetSpeedup(const string& matrix)
 
 double gpuBaselineMs(const string& matrix)
 {
+    // Original-author GPU baseline latency in ms. Local GPU kernel-only
+    // measurements are archived in SPARSEPIM_GPU_KERNEL_BASELINES_LOCAL.md.
     static const unordered_map<string, double> baselines{
-        {"ASIC_100k", 0.138408},
-        {"Stanford", 0.350585},
-        {"bcsstk32", 0.099581},
-        {"cant", 0.129579},
-        {"consph", 0.170734},
-        {"crankseg_2", 0.222282},
-        {"ct20stif", 0.106881},
-        {"lhr71", 0.117986},
-        {"ohne2", 0.279932},
-        {"pdb1HYS", 0.103166},
-        {"pwtk", 0.361986},
-        {"rma10", 0.102458},
-        {"shipsec1", 0.208423},
-        {"soc-sign-epinions", 0.176878},
-        {"webbase-1M", 0.867231},
-        {"xenon2", 0.234144},
+        {"ASIC_100k", 1.264486},
+        {"Stanford", 3.311456},
+        {"bcsstk32", 1.1594},
+        {"cant", 2.388768},
+        {"consph", 3.705472},
+        {"crankseg_2", 9.807726},
+        {"ct20stif", 1.673094},
+        {"lhr71", 1.90591},
+        {"ohne2", 18.24784},
+        {"pdb1HYS", 5.907898},
+        {"pwtk", 11.52014},
+        {"rma10", 2.682394},
+        {"shipsec1", 4.43507},
+        {"soc-sign-epinions", 1.187932},
+        {"webbase-1M", 5.887198},
+        {"xenon2", 11.67992},
     };
     auto it = baselines.find(matrix);
     return it == baselines.end() ? 0.0 : it->second;
@@ -249,7 +259,41 @@ void writeStructuralResults(int structural_variant,
            "v15_regular_false_positive_score v15_graph_like_penalty_score "
            "v15_saving_budget_cycle v15_saving_demand_cycle "
            "v15_effective_saving_cycle v15_protected_bga_hidden_cycle "
-           "v15_final_bounded_bga_hidden_cycle v15_budget_saturation_ratio\n";
+           "v15_final_bounded_bga_hidden_cycle v15_budget_saturation_ratio "
+           "v16_soft_alpha v16_true_high_speedup_candidate_score "
+           "v16_regular_false_positive_score v16_graph_like_penalty_score "
+           "v16_saving_budget_cycle v16_saving_demand_cycle "
+           "v16_effective_saving_cycle v16_protected_bga_hidden_cycle "
+           "v16_final_bounded_bga_hidden_cycle v16_budget_saturation_ratio "
+           "v17_soft_alpha v17_true_high_speedup_candidate_score "
+           "v17_regular_false_positive_score v17_graph_like_penalty_score "
+           "v17_regular_leakage_score v17_high_confidence_protection_score "
+           "v17_regular_soft_alpha_cap v17_saving_budget_cycle "
+           "v17_saving_demand_cycle v17_effective_saving_cycle "
+           "v17_protected_bga_hidden_cycle "
+           "v17_final_bounded_bga_hidden_cycle v17_budget_saturation_ratio "
+           "v17_1_soft_alpha v17_1_true_high_speedup_candidate_score "
+           "v17_1_regular_false_positive_score v17_1_graph_like_penalty_score "
+           "v17_1_regular_leakage_score "
+           "v17_1_high_confidence_protection_score "
+           "v17_1_regular_soft_alpha_cap v17_1_saving_budget_cycle "
+           "v17_1_saving_demand_cycle v17_1_effective_saving_cycle "
+           "v17_1_protected_bga_hidden_cycle "
+           "v17_1_final_bounded_bga_hidden_cycle "
+           "v17_1_budget_saturation_ratio "
+           "v18_soft_alpha v18_true_high_speedup_candidate_score "
+           "v18_regular_false_positive_score v18_graph_like_penalty_score "
+           "v18_regular_leakage_score v18_high_confidence_protection_score "
+           "v18_regular_soft_alpha_cap v18_graph_sync_gate "
+           "v18_graph_tail_gate v18_graph_sync_exposure_cycle "
+           "v18_saving_budget_cycle v18_saving_demand_cycle "
+           "v18_effective_saving_cycle v18_protected_bga_hidden_cycle "
+           "v18_final_bounded_bga_hidden_cycle v18_budget_saturation_ratio "
+           "bv4_requested_offload_ratio bv4_actual_offload_ratio "
+           "bv4_offload_overshoot_ratio bv4_setup_floor_penalty_cycle "
+           "bv4_offload_movement_penalty_cycle "
+           "bv4_merge_pressure_penalty_cycle bv4_regular_setup_gate "
+           "bv4_movement_irregularity_factor bv4_merge_pressure\n";
 
     for (const StructuralModelResult& result : results)
     {
@@ -359,7 +403,68 @@ void writeStructuralResults(int structural_variant,
             << result.v15_effective_saving_cycle << " "
             << result.v15_protected_bga_hidden_cycle << " "
             << result.v15_final_bounded_bga_hidden_cycle << " "
-            << result.v15_budget_saturation_ratio << "\n";
+            << result.v15_budget_saturation_ratio << " "
+            << result.v16_soft_alpha << " "
+            << result.v16_true_high_speedup_candidate_score << " "
+            << result.v16_regular_false_positive_score << " "
+            << result.v16_graph_like_penalty_score << " "
+            << result.v16_saving_budget_cycle << " "
+            << result.v16_saving_demand_cycle << " "
+            << result.v16_effective_saving_cycle << " "
+            << result.v16_protected_bga_hidden_cycle << " "
+            << result.v16_final_bounded_bga_hidden_cycle << " "
+            << result.v16_budget_saturation_ratio << " "
+            << result.v17_soft_alpha << " "
+            << result.v17_true_high_speedup_candidate_score << " "
+            << result.v17_regular_false_positive_score << " "
+            << result.v17_graph_like_penalty_score << " "
+            << result.v17_regular_leakage_score << " "
+            << result.v17_high_confidence_protection_score << " "
+            << result.v17_regular_soft_alpha_cap << " "
+            << result.v17_saving_budget_cycle << " "
+            << result.v17_saving_demand_cycle << " "
+            << result.v17_effective_saving_cycle << " "
+            << result.v17_protected_bga_hidden_cycle << " "
+            << result.v17_final_bounded_bga_hidden_cycle << " "
+            << result.v17_budget_saturation_ratio << " "
+            << result.v17_1_soft_alpha << " "
+            << result.v17_1_true_high_speedup_candidate_score << " "
+            << result.v17_1_regular_false_positive_score << " "
+            << result.v17_1_graph_like_penalty_score << " "
+            << result.v17_1_regular_leakage_score << " "
+            << result.v17_1_high_confidence_protection_score << " "
+            << result.v17_1_regular_soft_alpha_cap << " "
+            << result.v17_1_saving_budget_cycle << " "
+            << result.v17_1_saving_demand_cycle << " "
+            << result.v17_1_effective_saving_cycle << " "
+            << result.v17_1_protected_bga_hidden_cycle << " "
+            << result.v17_1_final_bounded_bga_hidden_cycle << " "
+            << result.v17_1_budget_saturation_ratio << " "
+            << result.v18_soft_alpha << " "
+            << result.v18_true_high_speedup_candidate_score << " "
+            << result.v18_regular_false_positive_score << " "
+            << result.v18_graph_like_penalty_score << " "
+            << result.v18_regular_leakage_score << " "
+            << result.v18_high_confidence_protection_score << " "
+            << result.v18_regular_soft_alpha_cap << " "
+            << result.v18_graph_sync_gate << " "
+            << result.v18_graph_tail_gate << " "
+            << result.v18_graph_sync_exposure_cycle << " "
+            << result.v18_saving_budget_cycle << " "
+            << result.v18_saving_demand_cycle << " "
+            << result.v18_effective_saving_cycle << " "
+            << result.v18_protected_bga_hidden_cycle << " "
+            << result.v18_final_bounded_bga_hidden_cycle << " "
+            << result.v18_budget_saturation_ratio << " "
+            << result.bv4_requested_offload_ratio << " "
+            << result.bv4_actual_offload_ratio << " "
+            << result.bv4_offload_overshoot_ratio << " "
+            << result.bv4_setup_floor_penalty_cycle << " "
+            << result.bv4_offload_movement_penalty_cycle << " "
+            << result.bv4_merge_pressure_penalty_cycle << " "
+            << result.bv4_regular_setup_gate << " "
+            << result.bv4_movement_irregularity_factor << " "
+            << result.bv4_merge_pressure << "\n";
     }
 
     out << "gmean_target_speedup: "
@@ -1686,6 +1791,34 @@ StructuralModelResult ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(
     double tck_ns = getConfigParam(FLOAT, "tCK");
     double gpu_ms = gpuBaselineMs(matrix_name);
     double target_speedup = paperTargetSpeedup(matrix_name);
+    if (variant_spec.id == 1001)
+    {
+        return runDrafBgaStructuralModelBV1(inputs, draf, bga, shape, critical,
+                                           exposure, timing, variant_spec,
+                                           matrix_name, gpu_ms, target_speedup,
+                                           tck_ns);
+    }
+    if (variant_spec.id == 1002)
+    {
+        return runDrafBgaStructuralModelBV2(inputs, draf, bga, shape, critical,
+                                           exposure, timing, variant_spec,
+                                           matrix_name, gpu_ms, target_speedup,
+                                           tck_ns);
+    }
+    if (variant_spec.id == 1003)
+    {
+        return runDrafBgaStructuralModelBV3(inputs, draf, bga, shape, critical,
+                                           exposure, timing, variant_spec,
+                                           matrix_name, gpu_ms, target_speedup,
+                                           tck_ns);
+    }
+    if (variant_spec.id == 1004 || variant_spec.id == 2004)
+    {
+        return runDrafBgaStructuralModelBV4(inputs, draf, bga, shape, critical,
+                                           exposure, timing, variant_spec,
+                                           matrix_name, gpu_ms, target_speedup,
+                                           tck_ns, true);
+    }
     if (variant_spec.id == 14)
     {
         return runDrafBgaStructuralModelV14(inputs, draf, bga, shape, critical,
@@ -1696,6 +1829,34 @@ StructuralModelResult ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(
     if (variant_spec.id == 15)
     {
         return runDrafBgaStructuralModelV15(inputs, draf, bga, shape, critical,
+                                           exposure, timing, variant_spec,
+                                           matrix_name, gpu_ms, target_speedup,
+                                           tck_ns);
+    }
+    if (variant_spec.id == 16)
+    {
+        return runDrafBgaStructuralModelV16(inputs, draf, bga, shape, critical,
+                                           exposure, timing, variant_spec,
+                                           matrix_name, gpu_ms, target_speedup,
+                                           tck_ns);
+    }
+    if (variant_spec.id == 17)
+    {
+        return runDrafBgaStructuralModelV17(inputs, draf, bga, shape, critical,
+                                           exposure, timing, variant_spec,
+                                           matrix_name, gpu_ms, target_speedup,
+                                           tck_ns);
+    }
+    if (variant_spec.id == 171)
+    {
+        return runDrafBgaStructuralModelV17_1(inputs, draf, bga, shape, critical,
+                                             exposure, timing, variant_spec,
+                                             matrix_name, gpu_ms, target_speedup,
+                                             tck_ns);
+    }
+    if (variant_spec.id == 18)
+    {
+        return runDrafBgaStructuralModelV18(inputs, draf, bga, shape, critical,
                                            exposure, timing, variant_spec,
                                            matrix_name, gpu_ms, target_speedup,
                                            tck_ns);
@@ -2345,6 +2506,61 @@ TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v14_struc
 TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v15_structural_model)
 {
     runGuidedKmeansDrafBgaStructuralSuite(15);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v16_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(16);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v17_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(17);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v17_1_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(171);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v18_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(18);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_bv1_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(1001);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_bv2_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(1002);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_bv3_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(1003);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_bv4_structural_model)
+{
+    runGuidedKmeansDrafBgaStructuralSuite(1004);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_minhash_binpack_v1_cantcoo_draf_bga_bv4_structural_model)
+{
+    vector<StructuralModelResult> results;
+    resetPIMKernel();
+    results.push_back(runDrafBgaStructuralModel(
+        "../SparsePIM/minhash_binpack_v1_cantcoo/",
+        "SparsePIM/minhash_binpack_v1_cantcoo", "cant", 2004));
+    writeStructuralResults(2004, results);
+    writeStructuralDiagnostics(2004, results);
+    writeStructuralResidualAnalysis(2004, results);
+    cout << "  wrote_structural_results: " << structuralResultPath(2004) << endl;
+    cout << "  wrote_phase_diagnostics: " << structuralDiagnosticPath(2004) << endl;
+    cout << "  wrote_residual_features: " << structuralResidualPath(2004) << endl;
 }
 
 TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_v4_draf_memory_structural_model)

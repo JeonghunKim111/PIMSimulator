@@ -1,0 +1,47 @@
+# SparsePIM structural residual feature analysis
+model_variant: minhash_binpack_v1_bv4_setup_bounded_offload_aware_movement
+source_results: Guided_kmeans_result/spmv_minhash_binpack_v1_cantcoo_draf_bga_bv4_structural_results.txt
+residual_definition: log(model_speedup) - log(target_speedup)
+notes: correlations are diagnostic only; model equations do not fit to targets
+columns: matrix residual_log model_speedup target_speedup mean_nnz_per_col row_nnz_gini col_nnz_gini single_nnz_column_ratio low_nnz_column_ratio draf_memory_expansion critical_padding_ratio exposure_factor bga_reduction_ratio bga_row_reuse_factor bga_unique_row_ratio bga_duplicate_partial_ratio bga_near_duplicate_partial_ratio bga_far_duplicate_partial_ratio bga_near_duplicate_share accumulator_flush_estimate bga_capacity_pressure bga_stream_capacity_flushes bga_critical_flushes bga_reuse_aware_accumulate_cycle draf_access_share draf_bga_window_occupancy draf_bga_contention_score draf_vs_coo_memory_ratio draf_exposed_memory_saving_factor phase_class_code bga_bound_score draf_access_bound_score padding_sync_bound_score percentile_tail_exposure_factor tail_skew_max_over_p90 tail_skew_max_over_p95 p90_to_max_tail_steps p95_to_max_tail_steps shared_bga_overlap_cycle shared_draf_overlap_cycle draf_step_tail_saved_cycle
+cant -0.133186 1.92566 2.2 64.1684 0.111077 0.111077 0.00389105 0.00389105 1.12308 0.122408 0.0117135 0 2.44678 0.4087 0.5913 0.580901 0.0103996 0.982412 54042 13.4375 860 3914 7809 0 0 0 0.724616 0 0 0 0 0 1 1.00227 1.00188 5 4.15 0 0 0
+
+# Pearson correlation with residual_log
+columns: feature pearson_r
+mean_nnz_per_col 0
+row_nnz_gini 0
+col_nnz_gini 0
+single_nnz_column_ratio 0
+low_nnz_column_ratio 0
+draf_memory_expansion 0
+critical_padding_ratio 0
+exposure_factor 0
+bga_reduction_ratio 0
+bga_row_reuse_factor 0
+bga_unique_row_ratio 0
+bga_duplicate_partial_ratio 0
+bga_near_duplicate_partial_ratio 0
+bga_far_duplicate_partial_ratio 0
+bga_near_duplicate_share 0
+accumulator_flush_estimate 0
+bga_capacity_pressure 0
+bga_stream_capacity_flushes 0
+bga_critical_flushes 0
+bga_reuse_aware_accumulate_cycle 0
+draf_access_share 0
+draf_bga_window_occupancy 0
+draf_bga_contention_score 0
+draf_vs_coo_memory_ratio 0
+draf_exposed_memory_saving_factor 0
+phase_class_code 0
+bga_bound_score 0
+draf_access_bound_score 0
+padding_sync_bound_score 0
+percentile_tail_exposure_factor 0
+tail_skew_max_over_p90 0
+tail_skew_max_over_p95 0
+p90_to_max_tail_steps 0
+p95_to_max_tail_steps 0
+shared_bga_overlap_cycle 0
+shared_draf_overlap_cycle 0
+draf_step_tail_saved_cycle 0
