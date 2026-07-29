@@ -6,7 +6,7 @@ This project validates a conventional-CSC-derived sparse SpMV layout and executi
 
 ## 2. Relationship to PIMSimulator
 
-The implementation is a **test-side functional/timing harness**, not a native BG-local PIM hardware engine. It uses `MultiChannelMemorySystem::addTransaction()` for aligned ordinary DRAM traffic. It does not claim that current rank-wide `PIMRank` executes descriptors independently. Existing `src/tests/CSCPartialStreamSpMV.cpp` remains an unchanged baseline.
+Milestones 1 and 2 retain the test-side functional/timing harness. Milestone 4 additionally provides a simulator-side, cycle-stepped BG-local descriptor engine that issues serialized ordinary DRAM reads and calls the Milestone 3 masked FP32 `PIMBlock` datapath. It is not yet a fully BG-decoupled, overlapping, request-ID-based engine, and it does not perform PIM-side indexed accumulation. Existing `src/tests/CSCPartialStreamSpMV.cpp` remains a baseline.
 
 ## 3. Current milestone
 
@@ -149,15 +149,72 @@ Cant (`cant_csc.txt`) was run after toy validation. The first attempt failed at 
 
 This is not a native BG-local engine. Descriptors are ideal/local. Indexed accumulation is host code. Scheduling is lockstep. Packed unaligned CSC, splitting/staging, callback IDs, same-address outstanding requests, overlap, BG-decoupling, masked native PIM ISA, lane-aware energy, and separate PIM ALU latency are absent. Native FP32 SRF behavior is not used. FP32/8 lanes is evaluated first; SparsePIM-oriented FP16/16 lanes remains future work.
 
+## 18. Milestone 2C simplified cycle calibration
+
+The Phase 1 calibration deliberately runs a representative subset instead of the full 16-matrix by 3-policy timing sweep. The selector reads the completed analytical sweep, chooses toy, smallest, median, and optional largest workloads, and compares round-robin with the lowest-lockstep alternative (or the second-best policy when round-robin is already best). Cases are resumable, preserve per-case images and stdout/stderr, and record timeout as an incomplete performance observation rather than a correctness failure.
+
+The external timing benchmark defines its boundaries as follows. `preload_cycles` begins before value/index image writes and ends after both write phases drain. It is excluded from all resident metrics. `resident_cycles` begins with the value-read phase and ends after the row-index phase drains; with result traffic set to `none`, it equals `value_completion_cycles + index_completion_cycles`. `with_x_cycles` additionally includes the preceding packed-x read phase and equals `x_load_cycles + resident_cycles`. `end_to_end_cycles` equals preload plus with-x. Assertions check all three identities and explicitly check that preload is excluded from resident cycles.
+
+The 2026-07-29 run selected seven cases. Toy, ASIC_100k round-robin/load-only, and cant round-robin/load-similarity completed. Both optional crankseg_2 cases reached their 60-second timeout and did not invalidate the run. All five completed cases passed external FP32 functional comparison, Scheme8 address ownership, transaction/accounting invariants, and zero invalid-lane multiply/partial/accumulation checks. ASIC_100k analytical rounds and resident cycles both favored load-only (13,471/204,104 versus 12,023/190,601). Cant analytical rounds and resident cycles both slightly favored round-robin (8,427/358,410 versus 8,439/358,887).
+
+These observations support analytical lockstep rounds as a policy-ordering indicator, not a direct linear cycle predictor. Absolute cycles also reflect row-buffer locality, channel/rank/BG contention, serialized request issue, x traffic, and the harness's separately drained phases. The calibration runner is `SparsePIM/csc_light_preprocess/run_csc_cycle_calibration.py`; the preserved result, logs, summary, and enriched timeout accounting are under `csc_light_preprocess/results/cycle_calibration_20260729_v2/`.
+
 ## 18. Future hardware milestones
 
 **Milestone 2 – test-side timing refinement:** external light-mapping result loader; physical export from `csc_light_preprocess`; real preprocessing-to-simulator connection; refined lockstep timing; matrix/x/result accounting validation; FP32 SRF audit.
 
-**Milestone 3 – native masked SIMD:** masked PIMBlock add/mul/mac/mad; valid-count/lane-mask sideband; invalid destination suppression; active-lane statistics and energy policy; policy for two PIM blocks/BG.
+### Milestone 2A implementation status (2026-07-29)
 
-**Milestone 4 – BG-local descriptor hardware:** `src/csc/CSCDescriptorEngine.{h,cpp}`, per-BG persistent FSM, remaining counter, dual streams, BG-local x staging/select, descriptor queue, busy/done/flush, ownership interface, CSC_EXEC semantics.
+The opt-in `csc_aligned` preprocessor path now reuses the existing feature,
+mapping, and BG-local ordering stages but bypasses the legacy packed physical
+materializer. It converts the original CSC values to FP32 and directly creates
+the authoritative 32-byte column-aligned BG images, descriptors, and x
+permutations. Existing `physical` behavior is retained; `physical_legacy` is
+an explicit alias.
+
+`CSCExternalImage` loads and validates the versioned image without remapping or
+rematerializing it. The binary contract is in `CSC_IMAGE_FORMAT.md`. Toy
+round-trip testing compares all bytes, descriptor fields, x permutations,
+statistics, chunks, and functional output against the internal round-robin
+builder. Cant correctness uses the reconstructed exported-FP32 semantics.
+
+`CSCTimingModel` now validates every value/index chunk address by decoding the
+Scheme8 address generated by `addrGenSafe`. Values retain bank 0/base row 0;
+indices bank 1/base row 4096; x bank 2/base row 8192; analytical results bank
+3/base row 12288. Result traffic is explicitly `None` or `Analytical`.
+
+The FP32 SRF audit found and fixed precision-independent FP16 indexing in
+`PIMRank::readOpd()`. A separate test checks both SRF halves, scalar replication
+to eight FP32 lanes, and MUL output. Native CSC execution remains disabled.
+
+Reproduce external tests from an isolated build:
+
+```bash
+env CSC_EXTERNAL_IMAGE=/tmp/csc_toy_image \
+    CSC_EXTERNAL_MATRIX=/home/gs13022/SparsePIM/csc_light_preprocess/testdata/toy_csc.txt \
+    ./sim --gtest_filter='CSCExternalImageFunctionalTest.*'
+env CSC_EXTERNAL_IMAGE=/tmp/csc_toy_image \
+    ./sim --gtest_filter='CSCExternalImageTimingTest.*'
+env CSC_EXTERNAL_IMAGE=/tmp/csc_cant_image \
+    ./sim --gtest_filter='CSCExternalImageCorrectnessTest.*'
+./sim --gtest_filter='CSCFP32SrfAuditTest.*'
+```
+
+The 16-matrix x three-policy in-memory preprocessing sweep is recorded in
+`SparsePIM/csc_light_preprocess/results/csc_aligned_m2_16_matrix_sweep.csv`.
+Full external-image DRAM cycle sweeping remains opt-in because the cant timing
+run alone submits more than one million runtime value/index transactions in
+separately drained phases.
+
+**Milestone 2 status:** M2A aligned image/materializer/exporter, M2B external loader/round-trip, and M2C accounting plus simplified cycle calibration are complete.
+
+**Milestone 3 – native masked SIMD:** masked PIMBlock ADD/MUL/MAC/MAD uses one `valid_count` source of truth; inactive lanes do not access operands, execute arithmetic, modify destination state, or generate partials. Unit tests cover valid counts 0/1/3/5/7/8, NaN/Inf sentinel safety, full-lane legacy equivalence, invalid-count rejection, counters, and toy external-image native masked MUL. Implementation and validation use an isolated snapshot; native descriptor issue remains outside Milestone 3.
+
+**Milestone 4 – native BG-local descriptor engine:** implemented in `src/csc/CSCDescriptorEngine.*`, `CSCRequestTracker.*`, and `CSCTypes.h`. It provides 64 persistent BG FSMs, local descriptors, runtime packed-x selection/reuse, Scheme8 value/index/x requests, completion-gated staging, M3 masked MUL, valid partial emission, busy/done/flush/reset, and counters. M4 globally serializes requests because callbacks lack request IDs. See `MILESTONE4_NATIVE_ENGINE.md`.
 
 **Milestone 5 – request identity/overlap:** transaction request kind/ID, BG/worker/sequence, completion token, multiple outstanding x/value/index, same-address correctness, scoreboards, overlap.
+
+**Milestone 4 stabilization:** `ERROR` is terminal failure with preserved BG/code/message and accepted-request drain; successful `DONE` is distinct from failure. Graceful flush is implemented (not cancellation), drains the full launched matrix and all partials through observable `FLUSHING`, and is idempotent. The stale self-extracting sim wrapper was replaced by a normal SCons-linked ELF; the standard GoogleTest runner returns 0 for assertion success and nonzero for assertion failure or fatal startup. M5 concurrency remains absent.
 
 **Milestone 6 – BG-decoupling:** separate rank-wide CRF/PC constraints, targeted execution, per-BG state/queue, shared bus contention, lockstep comparison, dual-PIM-block scheduling.
 

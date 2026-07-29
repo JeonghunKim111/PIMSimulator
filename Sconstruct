@@ -20,6 +20,7 @@ def getSources(target):
 
     if (target == "build"):
         build_sources = (Glob(joinpath(base_path["build"], "*.cpp")) +
+                         Glob(joinpath(base_path["build"], "csc/*.cpp")) +
                          Glob(joinpath(base_path["build"], "tests/*.cpp")) +
                          Glob(joinpath(base_path["build"], "tests/csc/*.cpp")))
         if int(en_emul) != 1:
@@ -27,6 +28,7 @@ def getSources(target):
         sources = build_sources
     elif (target == "lib"):
         lib_sources = Glob(joinpath(base_path["build"], "*.cpp"))
+        lib_sources += Glob(joinpath(base_path["build"], "csc/*.cpp"))
         lib_sources += Glob(joinpath(base_path["build"], "tests/PIMCmdGen.cpp"))
         lib_sources += Glob(joinpath(base_path["build"], "tests/PIMKernel.cpp"))
         lib_sources += Glob(joinpath(base_path["build"], "tests/KernelAddrGen.cpp"))

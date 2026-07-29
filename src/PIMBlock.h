@@ -28,6 +28,12 @@ namespace DRAMSim
 class PIMBlock
 {
   public:
+    struct SIMDExecutionCounters
+    {
+        uint64_t issued_operations = 0, active_lanes = 0, masked_lanes = 0;
+        uint64_t invalid_lane_operand_reads = 0, invalid_lane_arithmetic_operations = 0;
+        uint64_t invalid_lane_destination_writes = 0, invalid_lane_partial_results = 0;
+    };
     PIMBlock()
     {
         pimPrecision_ = PIMConfiguration::getPIMPrecision();
@@ -41,14 +47,22 @@ class PIMBlock
     BurstType aOut;
 
     void add(BurstType& dstBst, BurstType& src0Bst, BurstType& src1Bst);
+    void add(BurstType&, const BurstType&, const BurstType&, uint32_t valid_count);
     void mac(BurstType& dstBst, BurstType& src0Bst, BurstType& src1Bst);
+    void mac(BurstType&, const BurstType&, const BurstType&, uint32_t valid_count);
     void mul(BurstType& dstBst, BurstType& src0Bst, BurstType& src1Bst);
+    void mul(BurstType&, const BurstType&, const BurstType&, uint32_t valid_count);
     void mad(BurstType& dstBst, BurstType& src0Bst, BurstType& src1Bst, BurstType& src2Bst);
+    void mad(BurstType&, const BurstType&, const BurstType&, const BurstType&, uint32_t valid_count);
+    const SIMDExecutionCounters& simdCounters() const { return simd_counters_; }
+    void resetSIMDCounters() { simd_counters_ = {}; }
 
     std::string print();
 
   private:
+    uint32_t checkedValidCount(uint32_t valid_count);
     PIMPrecision pimPrecision_;
+    SIMDExecutionCounters simd_counters_;
 };
 
 }  // namespace DRAMSim

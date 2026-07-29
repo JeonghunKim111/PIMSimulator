@@ -437,8 +437,8 @@ class TimingSimulator
     TimingSimulator()
     {
         mem_ = make_shared<MultiChannelMemorySystem>("ini/HBM2_samsung_2M_16B_x64.ini",
-                                                     "system_hbm_64ch.ini", ".",
-                                                     "csc_partial_stream", 256 * 64 * 2);
+                                                     "system_hbm.ini", ".",
+                                                     "csc_partial_stream", 256 * 16);
         unsigned channels = getConfigParam(UINT, "NUM_CHANS");
         unsigned ranks = getConfigParam(UINT, "NUM_RANKS");
         kernel_ = make_shared<PIMKernel>(mem_, channels, ranks);

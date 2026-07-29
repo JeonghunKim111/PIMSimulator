@@ -263,10 +263,16 @@ void PIMRank::readOpd(int pb, BurstType& bst, PIMOpdType type, BusPacket* packet
                 bst = pimBlocks[pb].grfB[idx];
             return;
         case PIMOpdType::SRF_M:
-            bst.set(pimBlocks[pb].srf.fp16Data_[idx]);
+            if (PIMConfiguration::getPIMPrecision() == FP32)
+                bst.set(pimBlocks[pb].srf.fp32Data_[idx & 0x3]);
+            else
+                bst.set(pimBlocks[pb].srf.fp16Data_[idx]);
             return;
         case PIMOpdType::SRF_A:
-            bst.set(pimBlocks[pb].srf.fp16Data_[idx + 8]);
+            if (PIMConfiguration::getPIMPrecision() == FP32)
+                bst.set(pimBlocks[pb].srf.fp32Data_[(idx & 0x3) + 4]);
+            else
+                bst.set(pimBlocks[pb].srf.fp16Data_[idx + 8]);
             return;
     }
 }

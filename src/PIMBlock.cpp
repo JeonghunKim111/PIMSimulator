@@ -13,6 +13,7 @@
 #include "PIMBlock.h"
 
 #include <sstream>
+#include <stdexcept>
 #include <string>
 
 #include "PrintMacros.h"
@@ -21,18 +22,31 @@
 
 using namespace DRAMSim;
 
+uint32_t PIMBlock::checkedValidCount(uint32_t valid_count)
+{
+    const uint32_t lanes = pimPrecision_ == FP16 ? 16 : 8;
+    if (valid_count > lanes) throw std::invalid_argument("valid_count exceeds SIMD lane count");
+    simd_counters_.issued_operations++; simd_counters_.active_lanes += valid_count;
+    simd_counters_.masked_lanes += lanes - valid_count; return valid_count;
+}
+
 void PIMBlock::add(BurstType& dstBst, BurstType& src0Bst, BurstType& src1Bst)
 {
+    add(dstBst,src0Bst,src1Bst,pimPrecision_==FP16?16:8);
+}
+void PIMBlock::add(BurstType& dstBst,const BurstType& src0Bst,const BurstType& src1Bst,uint32_t valid_count)
+{
+    valid_count=checkedValidCount(valid_count);
     if (pimPrecision_ == FP16)
     {
-        for (int i = 0; i < 16; i++)
+        for (uint32_t i = 0; i < valid_count; i++)
         {
             dstBst.fp16Data_[i] = src0Bst.fp16Data_[i] + src1Bst.fp16Data_[i];
         }
     }
     else if (pimPrecision_ == FP32)
     {
-        for (int i = 0; i < 8; i++)
+        for (uint32_t i = 0; i < valid_count; i++)
         {
             dstBst.fp32Data_[i] = src0Bst.fp32Data_[i] + src1Bst.fp32Data_[i];
         }
@@ -43,16 +57,21 @@ void PIMBlock::add(BurstType& dstBst, BurstType& src0Bst, BurstType& src1Bst)
 
 void PIMBlock::mul(BurstType& dstBst, BurstType& src0Bst, BurstType& src1Bst)
 {
+    mul(dstBst,src0Bst,src1Bst,pimPrecision_==FP16?16:8);
+}
+void PIMBlock::mul(BurstType& dstBst,const BurstType& src0Bst,const BurstType& src1Bst,uint32_t valid_count)
+{
+    valid_count=checkedValidCount(valid_count);
     if (pimPrecision_ == FP16)
     {
-        for (int i = 0; i < 16; i++)
+        for (uint32_t i = 0; i < valid_count; i++)
         {
             dstBst.fp16Data_[i] = src0Bst.fp16Data_[i] * src1Bst.fp16Data_[i];
         }
     }
     else if (pimPrecision_ == FP32)
     {
-        for (int i = 0; i < 8; i++)
+        for (uint32_t i = 0; i < valid_count; i++)
         {
             dstBst.fp32Data_[i] = src0Bst.fp32Data_[i] * src1Bst.fp32Data_[i];
         }
@@ -63,9 +82,14 @@ void PIMBlock::mul(BurstType& dstBst, BurstType& src0Bst, BurstType& src1Bst)
 
 void PIMBlock::mac(BurstType& dstBst, BurstType& src0Bst, BurstType& src1Bst)
 {
+    mac(dstBst,src0Bst,src1Bst,pimPrecision_==FP16?16:8);
+}
+void PIMBlock::mac(BurstType& dstBst,const BurstType& src0Bst,const BurstType& src1Bst,uint32_t valid_count)
+{
+    valid_count=checkedValidCount(valid_count);
     if (pimPrecision_ == FP16)
     {
-        for (int i = 0; i < 16; i++)
+        for (uint32_t i = 0; i < valid_count; i++)
         {
             dstBst.fp16Data_[i] = src0Bst.fp16Data_[i] * src1Bst.fp16Data_[i] + dstBst.fp16Data_[i];
         }
@@ -75,7 +99,7 @@ void PIMBlock::mac(BurstType& dstBst, BurstType& src0Bst, BurstType& src1Bst)
     }
     else if (pimPrecision_ == FP32)
     {
-        for (int i = 0; i < 8; i++)
+        for (uint32_t i = 0; i < valid_count; i++)
         {
             dstBst.fp32Data_[i] = src0Bst.fp32Data_[i] * src1Bst.fp32Data_[i] + dstBst.fp32Data_[i];
         }
@@ -86,9 +110,14 @@ void PIMBlock::mac(BurstType& dstBst, BurstType& src0Bst, BurstType& src1Bst)
 
 void PIMBlock::mad(BurstType& dstBst, BurstType& src0Bst, BurstType& src1Bst, BurstType& src2Bst)
 {
+    mad(dstBst,src0Bst,src1Bst,src2Bst,pimPrecision_==FP16?16:8);
+}
+void PIMBlock::mad(BurstType& dstBst,const BurstType& src0Bst,const BurstType& src1Bst,const BurstType& src2Bst,uint32_t valid_count)
+{
+    valid_count=checkedValidCount(valid_count);
     if (pimPrecision_ == FP16)
     {
-        for (int i = 0; i < 16; i++)
+        for (uint32_t i = 0; i < valid_count; i++)
         {
             dstBst.fp16Data_[i] =
                 src0Bst.fp16Data_[i] * src1Bst.fp16Data_[i] + src2Bst.fp16Data_[i];
@@ -96,7 +125,7 @@ void PIMBlock::mad(BurstType& dstBst, BurstType& src0Bst, BurstType& src1Bst, Bu
     }
     else if (pimPrecision_ == FP32)
     {
-        for (int i = 0; i < 8; i++)
+        for (uint32_t i = 0; i < valid_count; i++)
         {
             dstBst.fp32Data_[i] =
                 src0Bst.fp32Data_[i] * src1Bst.fp32Data_[i] + src2Bst.fp32Data_[i];
