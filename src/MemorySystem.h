@@ -65,6 +65,8 @@ class MemorySystem : public MemoryObject
     virtual bool addTransaction(bool isWrite, uint64_t addr, BurstType* data);
     virtual bool addTransaction(bool isWrite, uint64_t addr, const std::string& tag,
                                 BurstType* data);
+    virtual bool addTransaction(bool isWrite, uint64_t addr, const std::string& tag,
+                                BurstType* data, const RequestToken& token);
 
     bool addBarrier();
     bool WillAcceptTransaction();
@@ -75,6 +77,7 @@ class MemorySystem : public MemoryObject
     void RegisterCallbacks(Callback_t* readDone, Callback_t* writeDone,
                            void (*reportPower)(double bgpower, double burstpower,
                                                double refreshpower, double actprepower));
+    void RegisterTokenCallbacks(TokenCompleteCB* readDone, TokenCompleteCB* writeDone);
     // fields
     MemoryController* memoryController;
     vector<Rank*>* ranks;
@@ -83,6 +86,8 @@ class MemorySystem : public MemoryObject
     // function pointers
     Callback_t* ReturnReadData;
     Callback_t* WriteDataDone;
+    TokenCompleteCB* ReturnReadDataToken;
+    TokenCompleteCB* WriteDataDoneToken;
 
     // TODO: make this a functor as well?
     static powerCallBack_t ReportPower;

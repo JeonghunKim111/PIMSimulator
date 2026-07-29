@@ -469,6 +469,13 @@ bool MultiChannelMemorySystem::addTransaction(bool isWrite, uint64_t addr, const
     return channels[channelNumber]->addTransaction(isWrite, addr, tag, data);
 }
 
+bool MultiChannelMemorySystem::addTransaction(bool isWrite, uint64_t addr, const std::string& tag,
+                                                   BurstType* data, const RequestToken& token)
+{
+    unsigned channelNumber = findChannelNumber(addr);
+    return channels[channelNumber]->addTransaction(isWrite, addr, tag, data, token);
+}
+
 void MultiChannelMemorySystem::printStats(bool finalStats)
 {
     uint64_t cyclesElapsed;
@@ -574,6 +581,12 @@ void MultiChannelMemorySystem::RegisterCallbacks(
     {
         channels[i]->RegisterCallbacks(readDone, writeDone, reportPower);
     }
+}
+
+void MultiChannelMemorySystem::RegisterTokenCallbacks(TokenCompleteCB* readDone, TokenCompleteCB* writeDone)
+{
+    for (size_t i = 0; i < configuration->NUM_CHANS; i++)
+        channels[i]->RegisterTokenCallbacks(readDone, writeDone);
 }
 
 int MultiChannelMemorySystem::hasPendingTransactions()

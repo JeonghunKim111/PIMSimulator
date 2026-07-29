@@ -116,8 +116,8 @@ void MemoryController::receiveFromBus(BusPacket* bpacket)
     }
 
     // add to return read data queue
-    returnTransaction.push_back(
-        new Transaction(RETURN_DATA, bpacket->physicalAddress, bpacket->data));
+    returnTransaction.push_back(new Transaction(RETURN_DATA, bpacket->physicalAddress, "",
+                                                bpacket->data, bpacket->requestToken));
 
     // this delete statement saves a mindboggling amount of memory
     delete (bpacket);
@@ -129,6 +129,9 @@ void MemoryController::returnReadData(const Transaction* trans)
     if (parentMemorySystem->ReturnReadData != NULL)
         (*parentMemorySystem->ReturnReadData)(parentMemorySystem->systemID, trans->address,
                                               currentClockCycle);
+    if (trans->requestToken.valid() && parentMemorySystem->ReturnReadDataToken != NULL)
+        (*parentMemorySystem->ReturnReadDataToken)(parentMemorySystem->systemID,
+                                                   trans->requestToken, currentClockCycle);
     parentMemorySystem->numOnTheFlyTransactions--;
 }
 
@@ -173,6 +176,7 @@ void MemoryController::updateCommandQueue(BusPacket* poppedBusPacket)
         writeDataToSend.push_back(new BusPacket(
             DATA, poppedBusPacket->physicalAddress, poppedBusPacket->column, poppedBusPacket->row,
             poppedBusPacket->rank, poppedBusPacket->bank, poppedBusPacket->data, dramsimLog));
+        writeDataToSend.back()->requestToken = poppedBusPacket->requestToken;
         writeDataCountdown.push_back(config.WL);
     }
 
@@ -348,6 +352,7 @@ void MemoryController::updateTransactionQueue()
                                     newTransactionRow, newTransactionRank, newTransactionBank,
                                     transaction->data, dramsimLog);
             command->tag = transaction->tag;
+            command->requestToken = transaction->requestToken;
             commandQueue.enqueue(command);
 
             // If we have a read, save the transaction so when the data comes back
@@ -483,6 +488,11 @@ void MemoryController::update()
                                                      outgoingDataPacket->physicalAddress,
                                                      currentClockCycle);
             }
+            if (outgoingDataPacket->requestToken.valid() &&
+                parentMemorySystem->WriteDataDoneToken != NULL)
+                (*parentMemorySystem->WriteDataDoneToken)(parentMemorySystem->systemID,
+                                                          outgoingDataPacket->requestToken,
+                                                          currentClockCycle);
             parentMemorySystem->numOnTheFlyTransactions--;
             (*ranks)[outgoingDataPacket->rank]->receiveFromBus(outgoingDataPacket);
             outgoingDataPacket = NULL;
@@ -548,7 +558,11 @@ void MemoryController::update()
         // find the pending read transaction to calculate latency
         for (size_t i = 0; i < pendingReadTransactions.size(); i++)
         {
-            if (pendingReadTransactions[i]->address == returnTransaction[0]->address)
+            if ((returnTransaction[0]->requestToken.valid() &&
+                 pendingReadTransactions[i]->requestToken ==
+                     returnTransaction[0]->requestToken) ||
+                (!returnTransaction[0]->requestToken.valid() &&
+                 pendingReadTransactions[i]->address == returnTransaction[0]->address))
             {
                 unsigned chan, rank, bank, row, col;
                 config.addrMapping.addressMapping(returnTransaction[0]->address, chan, rank, bank,

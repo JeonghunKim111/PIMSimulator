@@ -57,6 +57,8 @@ class MultiChannelMemorySystem : public MemoryObject
     virtual bool addTransaction(bool isWrite, uint64_t addr, BurstType* data);
     virtual bool addTransaction(bool isWrite, uint64_t addr, const std::string& tag,
                                 BurstType* data);
+    virtual bool addTransaction(bool isWrite, uint64_t addr, const std::string& tag,
+                                BurstType* data, const RequestToken& token);
 
     bool addBarrier(int chanId);
 
@@ -66,6 +68,7 @@ class MultiChannelMemorySystem : public MemoryObject
     void RegisterCallbacks(TransactionCompleteCB* readDone, TransactionCompleteCB* writeDone,
                            void (*reportPower)(double bgpower, double burstpower,
                                                double refreshpower, double actprepower));
+    void RegisterTokenCallbacks(TokenCompleteCB* readDone, TokenCompleteCB* writeDone);
     unsigned getNumFence(int ch)
     {
         return numFence[ch];

@@ -53,12 +53,21 @@ Transaction::Transaction(TransactionType transType, uint64_t addr, const std::st
     rowBufferPolicy = PIMConfiguration::getRowBufferPolicy();
 }
 
+Transaction::Transaction(TransactionType transType, uint64_t addr, const std::string& str,
+                         BurstType* dat, const RequestToken& token)
+    : transactionType(transType), address(addr), data(dat), tag(str), requestToken(token)
+{
+    rowBufferPolicy = PIMConfiguration::getRowBufferPolicy();
+}
+
 Transaction::Transaction(const Transaction& t)
     : transactionType(t.transactionType),
       address(t.address),
       data(NULL),
       timeAdded(t.timeAdded),
-      timeReturned(t.timeReturned)
+      timeReturned(t.timeReturned),
+      tag(t.tag),
+      requestToken(t.requestToken)
 {
     rowBufferPolicy = PIMConfiguration::getRowBufferPolicy();
 #ifndef NO_STORAGE

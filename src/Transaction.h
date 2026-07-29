@@ -34,6 +34,7 @@
 #include <string>
 
 #include "BusPacket.h"
+#include "RequestToken.h"
 #include "SystemConfiguration.h"
 
 using std::ostream;
@@ -59,11 +60,14 @@ class Transaction
     uint64_t timeAdded;
     uint64_t timeReturned;
     std::string tag;
+    RequestToken requestToken;
 
     friend ostream& operator<<(ostream& os, const Transaction& t);
     // functions
     Transaction(TransactionType transType, uint64_t addr, BurstType* dat);
     Transaction(TransactionType transType, uint64_t addr, const std::string& str, BurstType* dat);
+    Transaction(TransactionType transType, uint64_t addr, const std::string& str, BurstType* dat,
+                const RequestToken& token);
     Transaction(const Transaction& t);
 
     BusPacketType getBusPacketType()

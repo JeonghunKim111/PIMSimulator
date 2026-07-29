@@ -45,6 +45,8 @@ MemorySystem::MemorySystem(unsigned id, unsigned int megsOfMemory, CSVWriter& cs
     : dramsimLog(simLog),
       ReturnReadData(NULL),
       WriteDataDone(NULL),
+      ReturnReadDataToken(NULL),
+      WriteDataDoneToken(NULL),
       systemID(id),
       csvOut(csvOut_),
       numOnTheFlyTransactions(0),
@@ -187,6 +189,14 @@ bool MemorySystem::addTransaction(bool isWrite, uint64_t addr, const std::string
     return addTransaction(trans);
 }
 
+bool MemorySystem::addTransaction(bool isWrite, uint64_t addr, const std::string& str,
+                                  BurstType* data, const RequestToken& token)
+{
+    if (!WillAcceptTransaction(addr)) return false;
+    TransactionType type = isWrite ? DATA_WRITE : DATA_READ;
+    return addTransaction(new Transaction(type, addr, str, data, token));
+}
+
 bool MemorySystem::addBarrier()
 {
     if (memoryController->WillAcceptTransaction())
@@ -264,6 +274,12 @@ void MemorySystem::RegisterCallbacks(Callback_t* readCB, Callback_t* writeCB,
     ReturnReadData = readCB;
     WriteDataDone = writeCB;
     ReportPower = reportPower;
+}
+
+void MemorySystem::RegisterTokenCallbacks(TokenCompleteCB* readDone, TokenCompleteCB* writeDone)
+{
+    ReturnReadDataToken = readDone;
+    WriteDataDoneToken = writeDone;
 }
 
 bool MemorySystem::WillAcceptTransaction(uint64_t addr)

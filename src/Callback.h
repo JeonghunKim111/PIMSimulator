@@ -33,6 +33,8 @@
 #ifndef CALLBACK_H
 #define CALLBACK_H
 
+#include "RequestToken.h"
+
 namespace DRAMSim
 {
 template <typename ReturnT, typename Param1T, typename Param2T, typename Param3T>
@@ -74,6 +76,7 @@ class Callback : public CallbackBase<ReturnT, Param1T, Param2T, Param3T>
 };
 
 typedef CallbackBase<void, unsigned, uint64_t, uint64_t> TransactionCompleteCB;
+typedef CallbackBase<void, unsigned, const RequestToken&, uint64_t> TokenCompleteCB;
 }  // namespace DRAMSim
 
 #endif

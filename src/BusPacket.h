@@ -34,6 +34,7 @@
 #include <string>
 
 #include "Burst.h"
+#include "RequestToken.h"
 #include "SystemConfiguration.h"
 
 namespace DRAMSim
@@ -64,6 +65,7 @@ class BusPacket
     uint64_t physicalAddress;
     BurstType* data;
     std::string tag;
+    RequestToken requestToken;
 
     // Functions
     BusPacket(BusPacketType packtype, uint64_t physicalAddr, unsigned col, unsigned rw, unsigned r,
