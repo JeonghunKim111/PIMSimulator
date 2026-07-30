@@ -146,6 +146,13 @@ struct CSCExecutionCounters : CSCEngineCounters {
     uint64_t cycles_with_outstanding_ge_1 = 0, cycles_with_outstanding_ge_2 = 0;
     uint64_t outstanding_cycle_integral = 0;
     uint64_t launch_to_done_cycles = 0;
+    std::array<uint64_t, kCSCGlobalBGCount> per_bg_ready_cycles{}, per_bg_executing_cycles{};
+    std::array<uint64_t, kCSCGlobalBGCount> per_bg_memory_wait_cycles{}, per_bg_grant_wait_cycles{};
+    std::array<uint64_t, kCSCGlobalBGCount> per_bg_flush_drain_cycles{};
+    std::array<uint64_t, 128> per_pimblock_active_cycles{}, per_pimblock_targeted_ops{};
+    uint64_t rank_targeted_grants = 0, rank_command_bus_stall_cycles = 0;
+    uint64_t rank_resource_conflict_stall_cycles = 0, rank_mode_drain_cycles = 0;
+    uint64_t round_robin_skip_count = 0;
     double average_outstanding = 0;
     std::array<uint64_t, kCSCRequestKindCount> issued_by_kind{}, completed_by_kind{};
     std::array<uint64_t, kCSCRequestKindCount> abandoned_by_kind{};

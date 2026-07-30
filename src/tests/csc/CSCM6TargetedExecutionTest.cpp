@@ -1,0 +1,332 @@
+#include <gtest/gtest.h>
+
+#include <memory>
+#include <stdexcept>
+
+#include "MultiChannelMemorySystem.h"
+#include "PIMRank.h"
+#include "csc/CSCDescriptorEngine.h"
+
+namespace
+{
+using namespace DRAMSim;
+
+class TargetHarness
+{
+  public:
+    TargetHarness()
+        : memory(std::make_shared<MultiChannelMemorySystem>(
+              "ini/HBM2_samsung_2M_16B_x64.ini", "system_hbm_csc_fp32.ini", ".",
+              "csc_m6_target_port", 256 * 16)),
+          pim(*memory->channels.at(0)->ranks->at(0)->pimRank)
+    {
+    }
+
+    BGTargetedOperation operation(uint32_t bg, uint64_t id, uint8_t mask = 1,
+                                  uint32_t valid_count = 8)
+    {
+        BGTargetedOperation op;
+        op.identity.operation_id = id;
+        op.identity.channel = 0;
+        op.identity.rank = 0;
+        op.identity.local_bg = bg;
+        op.identity.pimblock_mask = mask;
+        op.identity.worker_id = bg;
+        op.identity.sequence = id;
+        op.identity.generation = 1;
+        op.valid_count = valid_count;
+        for (uint32_t bit = 0; bit < 2; ++bit)
+            if (mask & (1U << bit))
+            {
+                op.contexts[bit].valid = true;
+                for (uint32_t lane = 0; lane < 8; ++lane)
+                {
+                    op.contexts[bit].lhs.fp32Data_[lane] = float(id + lane);
+                    op.contexts[bit].rhs.fp32Data_[lane] = float(bit + 2);
+                }
+            }
+        return op;
+    }
+
+    void nextCycle(bool command_busy = false, bool data_busy = false)
+    {
+        pim.step();
+        pim.serviceBGTargeted(command_busy, data_busy);
+    }
+
+    std::shared_ptr<MultiChannelMemorySystem> memory;
+    PIMRank& pim;
+};
+}  // namespace
+
+TEST(CSCM6TargetedExecutionTest, StaticBGToPIMBlockPairBinding)
+{
+    TargetHarness h;
+    for (uint32_t bg = 0; bg < 4; ++bg)
+        EXPECT_EQ(h.pim.physicalPIMBlockPair(bg),
+                  (std::array<uint32_t, 2>{bg * 2, bg * 2 + 1}));
+}
+
+TEST(CSCM6TargetedExecutionTest, TopologyMismatchFailsFast)
+{
+    TargetHarness h;
+    EXPECT_EQ(h.pim.pimBlocks.size(), 8);
+    EXPECT_THROW(h.pim.physicalPIMBlockPair(4), std::out_of_range);
+}
+
+TEST(CSCM6TargetedExecutionTest, OneHotMaskSelectsFirstPIMBlock)
+{
+    TargetHarness h;
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(h.operation(1, 11, 1)));
+    h.pim.serviceBGTargeted(false, false);
+    EXPECT_EQ(h.pim.targetedPIMBlockBusyMask(), 1U << 2);
+    h.nextCycle();
+    BGTargetedCompletion completion;
+    ASSERT_TRUE(h.pim.pollBGTargetedCompletion(1, completion));
+    EXPECT_FLOAT_EQ(completion.results[0].fp32Data_[3], float(14 * 2));
+    EXPECT_EQ(h.pim.pimBlocks[2].simdCounters().issued_operations, 1);
+    EXPECT_EQ(h.pim.pimBlocks[3].simdCounters().issued_operations, 0);
+}
+
+TEST(CSCM6TargetedExecutionTest, OneHotMaskSelectsSecondPIMBlock)
+{
+    TargetHarness h;
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(h.operation(2, 7, 2)));
+    h.pim.serviceBGTargeted(false, false);
+    EXPECT_EQ(h.pim.targetedPIMBlockBusyMask(), 1U << 5);
+    h.nextCycle();
+    BGTargetedCompletion completion;
+    ASSERT_TRUE(h.pim.pollBGTargetedCompletion(2, completion));
+    EXPECT_FLOAT_EQ(completion.results[1].fp32Data_[2], float(9 * 3));
+    EXPECT_EQ(h.pim.pimBlocks[4].simdCounters().issued_operations, 0);
+    EXPECT_EQ(h.pim.pimBlocks[5].simdCounters().issued_operations, 1);
+}
+
+TEST(CSCM6TargetedExecutionTest, PairMaskRequiresTwoValidContexts)
+{
+    TargetHarness h;
+    auto invalid = h.operation(0, 1, 1);
+    invalid.identity.pimblock_mask = 3;
+    EXPECT_THROW(h.pim.submitBGTargetedOperation(invalid), std::invalid_argument);
+    auto valid = h.operation(0, 2, 3);
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(valid));
+    h.pim.serviceBGTargeted(false, false);
+    EXPECT_EQ(h.pim.targetedPIMBlockBusyMask(), 3);
+    h.nextCycle();
+    BGTargetedCompletion completion;
+    ASSERT_TRUE(h.pim.pollBGTargetedCompletion(0, completion));
+    EXPECT_EQ(completion.identity.pimblock_mask, 3);
+}
+
+TEST(CSCM6TargetedExecutionTest, BGTargetDoesNotTouchOtherPIMBlocks)
+{
+    TargetHarness h;
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(h.operation(3, 4)));
+    h.pim.serviceBGTargeted(false, false);
+    h.nextCycle();
+    BGTargetedCompletion completion;
+    ASSERT_TRUE(h.pim.pollBGTargetedCompletion(3, completion));
+    for (uint32_t block = 0; block < 8; ++block)
+        EXPECT_EQ(h.pim.pimBlocks[block].simdCounters().issued_operations, block == 6 ? 1 : 0);
+}
+
+TEST(CSCM6TargetedExecutionTest, OneGrantPerRankPerCycle)
+{
+    TargetHarness h;
+    for (uint32_t bg = 0; bg < 4; ++bg)
+        ASSERT_TRUE(h.pim.submitBGTargetedOperation(h.operation(bg, bg + 1)));
+    h.pim.serviceBGTargeted(false, false);
+    EXPECT_EQ(h.pim.targetedStatistics().rank_targeted_grants, 1);
+    EXPECT_EQ(h.pim.nextBGRoundRobin(), 1);
+}
+
+TEST(CSCM6TargetedExecutionTest, RoundRobinPreventsStarvation)
+{
+    TargetHarness h;
+    for (uint32_t bg = 0; bg < 4; ++bg)
+        ASSERT_TRUE(h.pim.submitBGTargetedOperation(h.operation(bg, bg + 1)));
+    h.pim.serviceBGTargeted(false, false);
+    for (uint32_t expected = 0; expected < 4; ++expected)
+    {
+        h.nextCycle();
+        BGTargetedCompletion completion;
+        ASSERT_TRUE(h.pim.pollBGTargetedCompletion(expected, completion));
+        EXPECT_EQ(completion.identity.operation_id, expected + 1);
+        EXPECT_EQ(completion.grant_cycle, expected);
+    }
+    EXPECT_EQ(h.pim.targetedStatistics().rank_targeted_grants, 4);
+}
+
+TEST(CSCM6TargetedExecutionTest, CommandBusBusyStallsGrant)
+{
+    TargetHarness h;
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(h.operation(0, 1)));
+    h.pim.serviceBGTargeted(true, false);
+    EXPECT_EQ(h.pim.targetedStatistics().rank_targeted_grants, 0);
+    EXPECT_EQ(h.pim.targetedStatistics().rank_command_bus_stall_cycles, 1);
+    EXPECT_TRUE(h.pim.bgHasPendingOperation(0));
+}
+
+TEST(CSCM6TargetedExecutionTest, GrantCompletesOnNextCycle)
+{
+    TargetHarness h;
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(h.operation(0, 1)));
+    h.pim.serviceBGTargeted(false, false);
+    BGTargetedCompletion completion;
+    EXPECT_FALSE(h.pim.pollBGTargetedCompletion(0, completion));
+    h.nextCycle();
+    ASSERT_TRUE(h.pim.pollBGTargetedCompletion(0, completion));
+    EXPECT_EQ(completion.completion_cycle, completion.grant_cycle + 1);
+    EXPECT_FALSE(h.pim.pollBGTargetedCompletion(0, completion));
+    EXPECT_EQ(h.pim.targetedPIMBlockBusyMask(), 0);
+}
+
+TEST(CSCM6FlushIsolationTest, OneBGFlushDoesNotStopOtherBGs)
+{
+    TargetHarness h;
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(h.operation(0, 1)));
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(h.operation(1, 2)));
+    h.pim.flushBG(0);
+    EXPECT_EQ(h.pim.bgLifecycle(0), BGLifecycleState::FLUSHED);
+    EXPECT_TRUE(h.pim.bgHasPendingOperation(1));
+    h.pim.serviceBGTargeted(false, false);
+    EXPECT_EQ(h.pim.targetedStatistics().rank_targeted_grants, 1);
+}
+
+TEST(CSCM6FlushIsolationTest, GrantedTargetedOpCompletesAfterFlush)
+{
+    TargetHarness h;
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(h.operation(0, 1)));
+    h.pim.serviceBGTargeted(false, false);
+    h.pim.flushBG(0);
+    EXPECT_EQ(h.pim.bgLifecycle(0), BGLifecycleState::DRAINING);
+    h.nextCycle();
+    BGTargetedCompletion completion;
+    ASSERT_TRUE(h.pim.pollBGTargetedCompletion(0, completion));
+    h.nextCycle();
+    EXPECT_EQ(h.pim.bgLifecycle(0), BGLifecycleState::FLUSHED);
+}
+
+TEST(CSCM6FlushIsolationTest, ResetRequiresQuiescentBGAndIncrementsGeneration)
+{
+    TargetHarness h;
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(h.operation(0, 1)));
+    EXPECT_FALSE(h.pim.resetBG(0));
+    EXPECT_EQ(h.pim.bgGeneration(0), 1);
+    h.nextCycle();
+    EXPECT_TRUE(h.pim.resetBG(0));
+    EXPECT_EQ(h.pim.bgGeneration(0), 2);
+    EXPECT_EQ(h.pim.bgLifecycle(0), BGLifecycleState::IDLE);
+}
+
+TEST(CSCM6ModeIsolationTest, TargetedModeExitUsesDrain)
+{
+    TargetHarness h;
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(h.operation(0, 1)));
+    ASSERT_TRUE(h.pim.requestTargetedModeExit());
+    EXPECT_EQ(h.pim.executionMode(), RankExecutionMode::DRAINING);
+    h.pim.serviceBGTargeted(false, false);
+    EXPECT_EQ(h.pim.executionMode(), RankExecutionMode::DRAINING);
+    h.pim.flushBG(0);
+    h.nextCycle();
+    EXPECT_EQ(h.pim.executionMode(), RankExecutionMode::IDLE);
+}
+
+TEST(CSCM6IntegrationTest, InternalImageUsesPhysicalPIMBlockAndMatchesCPU)
+{
+    using namespace csc_descriptor;
+    std::array<std::vector<uint8_t>, 64> values, rows;
+    std::array<std::vector<CSCDescriptor>, 64> descriptors;
+    std::array<std::vector<float>, 64> x;
+    std::array<CSCBGImageView, 64> views;
+    for (uint32_t bg = 0; bg < 64; ++bg)
+    {
+        values[bg].resize(32);
+        rows[bg].resize(32);
+        x[bg].push_back(bg == 0 ? 3.0F : 0.0F);
+        views[bg] = {&values[bg], &rows[bg], &descriptors[bg], &x[bg]};
+    }
+    const float value = 2.5F;
+    const uint32_t row = 0;
+    std::memcpy(values[0].data(), &value, sizeof(value));
+    std::memcpy(rows[0].data(), &row, sizeof(row));
+    descriptors[0].push_back({0, 0, 1, 0, 0, 0});
+
+    CSCNativeExecution execution;
+    execution.launch(views, 1, 1);
+    uint64_t guard = 0;
+    while (!execution.done() && guard++ < 10000) execution.tick();
+    ASSERT_TRUE(execution.isDone());
+    ASSERT_LT(guard, 10000);
+    const auto result = execution.hostAccumulate();
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_FLOAT_EQ(result[0], 7.5F);
+    const auto counters = execution.counters();
+    EXPECT_EQ(counters.logical_mul_events, 1);
+    EXPECT_EQ(counters.rank_targeted_grants, 1);
+    EXPECT_EQ(counters.per_pimblock_targeted_ops[0], 1);
+    EXPECT_EQ(counters.per_pimblock_targeted_ops[1], 0);
+    EXPECT_EQ(counters.per_bg_executing_cycles[0], 1);
+}
+
+TEST(CSCM6CycleComparisonTest, DecoupledCountersComeFromContendedSimulatorCycles)
+{
+    TargetHarness h;
+    for (uint32_t bg = 0; bg < 4; ++bg)
+        ASSERT_TRUE(h.pim.submitBGTargetedOperation(h.operation(bg, bg + 1)));
+    h.pim.serviceBGTargeted(true, false);
+    for (uint32_t cycle = 0; cycle < 4; ++cycle) h.nextCycle();
+    const auto& counters = h.pim.targetedStatistics();
+    EXPECT_EQ(counters.rank_command_bus_stall_cycles, 1);
+    EXPECT_EQ(counters.rank_targeted_grants, 4);
+    EXPECT_EQ(counters.round_robin_skip_count, 0);
+    EXPECT_EQ(h.pim.targetedPIMBlockBusyMask(), 1U << 6);
+    h.nextCycle();
+    EXPECT_EQ(h.pim.targetedPIMBlockBusyMask(), 0);
+}
+
+TEST(CSCM6TargetedExecutionTest, StaleGenerationOperationIsRejectedAfterReset)
+{
+    TargetHarness h;
+    auto first = h.operation(0, 1);
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(first));
+    h.pim.flushBG(0);
+    ASSERT_TRUE(h.pim.resetBG(0));
+    EXPECT_EQ(h.pim.bgGeneration(0), 2);
+    auto stale = h.operation(0, 2);
+    stale.identity.generation = 1;
+    EXPECT_THROW(h.pim.submitBGTargetedOperation(stale), std::invalid_argument);
+}
+
+TEST(CSCM6ModeIsolationTest, LegacyAndTargetedModesAreMutuallyExclusive)
+{
+    TargetHarness targeted;
+    ASSERT_TRUE(targeted.pim.submitBGTargetedOperation(targeted.operation(0, 1)));
+    BurstType control_data;
+    control_data.u8Data_[0] = 1;
+    BusPacket enter_legacy(WRITE, 0, 0, 0, 0, 0, &control_data,
+                           targeted.memory->getLogFile());
+    EXPECT_THROW(targeted.pim.controlPIM(&enter_legacy), std::logic_error);
+
+    TargetHarness legacy;
+    BusPacket legacy_packet(WRITE, 0, 0, 0, 0, 0, &control_data,
+                            legacy.memory->getLogFile());
+    legacy.pim.controlPIM(&legacy_packet);
+    EXPECT_EQ(legacy.pim.executionMode(), RankExecutionMode::LEGACY_RANK_WIDE);
+    EXPECT_FALSE(legacy.pim.submitBGTargetedOperation(legacy.operation(0, 3)));
+}
+
+TEST(CSCM6ModeIsolationTest, DifferentRanksMayUseDifferentModes)
+{
+    TargetHarness h;
+    auto& other = *h.memory->channels.at(1)->ranks->at(0)->pimRank;
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(h.operation(0, 1)));
+    auto op = h.operation(0, 2);
+    op.identity.channel = 1;
+    ASSERT_TRUE(other.submitBGTargetedOperation(op));
+    h.pim.serviceBGTargeted(false, false);
+    other.serviceBGTargeted(true, false);
+    EXPECT_EQ(h.pim.targetedStatistics().rank_targeted_grants, 1);
+    EXPECT_EQ(other.targetedStatistics().rank_targeted_grants, 0);
+    EXPECT_EQ(other.targetedStatistics().rank_command_bus_stall_cycles, 1);
+}

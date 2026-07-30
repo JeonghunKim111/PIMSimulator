@@ -83,6 +83,14 @@ bool PIMRank::submitBGTargetedOperation(const BGTargetedOperation& operation)
 {
     validateTargetedOperation(operation);
     const uint32_t bg = operation.identity.local_bg;
+    if (operation.identity.generation != bg_generation_[bg])
+    {
+        if (operation.identity.generation > bg_generation_[bg] &&
+            !bg_pending_[bg].occupied && !bg_active_[bg] && !bg_completion_[bg])
+            bg_generation_[bg] = operation.identity.generation;
+        else
+            throw std::invalid_argument("stale BG-targeted operation generation");
+    }
     if (bg_lifecycle_[bg] == BGLifecycleState::FLUSH_REQUESTED ||
         bg_lifecycle_[bg] == BGLifecycleState::DRAINING ||
         bg_lifecycle_[bg] == BGLifecycleState::FLUSHED ||
