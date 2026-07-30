@@ -12,6 +12,8 @@
 
 #include "PIMRank.h"
 
+#include <stdexcept>
+
 #include <bitset>
 #include <iostream>
 
@@ -36,6 +38,92 @@ PIMRank::PIMRank(ostream& simLog, Configuration& configuration)
                 PIMBlock(PIMConfiguration::getPIMPrecision()))
 {
     currentClockCycle = 0;
+    validateTargetedTopology();
+}
+
+void PIMRank::validateTargetedTopology()
+{
+    if (getConfigParam(UINT, "NUM_BANK_GROUPS") != kBGsPerRank || config.NUM_BANKS != 16 ||
+        config.NUM_PIM_BLOCKS != kBGsPerRank * kPIMBlocksPerBG)
+        throw std::runtime_error("M6 targeted execution requires 4 BG/16 bank/8 PIMBlock topology");
+
+    std::array<bool, 8> owned{};
+    for (uint32_t bg = 0; bg < kBGsPerRank; ++bg)
+    {
+        bg_lifecycle_[bg] = BGLifecycleState::IDLE;
+        bg_generation_[bg] = 0;
+        for (uint32_t in_pair = 0; in_pair < kPIMBlocksPerBG; ++in_pair)
+        {
+            const uint32_t block = bg * kPIMBlocksPerBG + in_pair;
+            if (block >= pimBlocks.size() || owned[block] || block * 2 + 1 >= config.NUM_BANKS)
+                throw std::runtime_error("M6 BG/PIMBlock mapping corruption");
+            owned[block] = true;
+            bg_to_pimblocks_[bg][in_pair] = block;
+        }
+    }
+}
+
+void PIMRank::validateTargetedOperation(const BGTargetedOperation& operation) const
+{
+    const auto& id = operation.identity;
+    if (!id.operation_id || id.channel != static_cast<uint32_t>(chanId) ||
+        id.rank != static_cast<uint32_t>(rankId) || id.local_bg >= kBGsPerRank)
+        throw std::invalid_argument("invalid BG-targeted operation identity");
+    if (!id.pimblock_mask || (id.pimblock_mask & ~kBGTargetBothPIMBlocks))
+        throw std::invalid_argument("invalid BG-targeted PIMBlock mask");
+    if (!operation.valid_count || operation.valid_count > 8)
+        throw std::invalid_argument("invalid BG-targeted valid count");
+    for (uint32_t bit = 0; bit < kPIMBlocksPerBG; ++bit)
+        if ((id.pimblock_mask & (1U << bit)) && !operation.contexts[bit].valid)
+            throw std::invalid_argument("selected PIMBlock has no operand context");
+}
+
+bool PIMRank::submitBGTargetedOperation(const BGTargetedOperation& operation)
+{
+    validateTargetedOperation(operation);
+    const uint32_t bg = operation.identity.local_bg;
+    if (bg_lifecycle_[bg] == BGLifecycleState::FLUSH_REQUESTED ||
+        bg_lifecycle_[bg] == BGLifecycleState::DRAINING ||
+        bg_lifecycle_[bg] == BGLifecycleState::FLUSHED ||
+        bg_lifecycle_[bg] == BGLifecycleState::ERROR_DRAINING ||
+        bg_lifecycle_[bg] == BGLifecycleState::ERROR || bg_pending_[bg].occupied)
+        return false;
+    bg_pending_[bg].occupied = true;
+    bg_pending_[bg].operation = operation;
+    bg_pending_[bg].operation.state = BGTargetedOperationState::WAITING_FOR_GRANT;
+    bg_lifecycle_[bg] = BGLifecycleState::RUNNING;
+    return true;
+}
+
+BGLifecycleState PIMRank::bgLifecycle(uint32_t local_bg) const
+{
+    if (local_bg >= kBGsPerRank) throw std::out_of_range("local BG");
+    return bg_lifecycle_[local_bg];
+}
+
+uint32_t PIMRank::bgGeneration(uint32_t local_bg) const
+{
+    if (local_bg >= kBGsPerRank) throw std::out_of_range("local BG");
+    return bg_generation_[local_bg];
+}
+
+bool PIMRank::bgHasPendingOperation(uint32_t local_bg) const
+{
+    if (local_bg >= kBGsPerRank) throw std::out_of_range("local BG");
+    return bg_pending_[local_bg].occupied;
+}
+
+const BGTargetedOperation& PIMRank::bgPendingOperation(uint32_t local_bg) const
+{
+    if (!bgHasPendingOperation(local_bg)) throw std::logic_error("BG has no pending operation");
+    return bg_pending_[local_bg].operation;
+}
+
+const std::array<uint32_t, kPIMBlocksPerBG>& PIMRank::physicalPIMBlockPair(
+    uint32_t local_bg) const
+{
+    if (local_bg >= kBGsPerRank) throw std::out_of_range("local BG");
+    return bg_to_pimblocks_[local_bg];
 }
 
 void PIMRank::attachRank(Rank* r)

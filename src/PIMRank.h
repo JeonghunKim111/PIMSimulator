@@ -18,6 +18,7 @@
 #include "AddressMapping.h"
 #include "BusPacket.h"
 #include "Configuration.h"
+#include "BGTargetedOperation.h"
 #include "PIMBlock.h"
 #include "PIMCmd.h"
 #include "Rank.h"
@@ -59,12 +60,26 @@ class Rank;  // forward declaration
 class PIMRank : public SimulatorObject
 {
   private:
+    struct BGPendingSlot
+    {
+        bool occupied = false;
+        BGTargetedOperation operation{};
+    };
+
     int chanId;
     int rankId;
     ostream& dramsimLog;
     Configuration& config;
     int pimPC_, lastJumpIdx_, numJumpToBeTaken_, lastRepeatIdx_, numRepeatToBeDone_;
     bool pimOpMode_, toggleEvenBank_, toggleOddBank_, toggleRa13h_, crfExit_;
+    RankExecutionMode execution_mode_ = RankExecutionMode::IDLE;
+    std::array<BGLifecycleState, kBGsPerRank> bg_lifecycle_{};
+    std::array<uint32_t, kBGsPerRank> bg_generation_{};
+    std::array<BGPendingSlot, kBGsPerRank> bg_pending_{};
+    std::array<std::array<uint32_t, kPIMBlocksPerBG>, kBGsPerRank> bg_to_pimblocks_{};
+
+    void validateTargetedTopology();
+    void validateTargetedOperation(const BGTargetedOperation&) const;
 
   public:
     PIMRank(ostream& simLog, Configuration& configuration);
@@ -86,6 +101,13 @@ class PIMRank : public SimulatorObject
     void writeOpd(int pb, BurstType& bst, PIMOpdType type, BusPacket* packet, int idx, bool is_auto,
                   bool is_mac);
     bool isToggleCond(BusPacket* packet);
+    bool submitBGTargetedOperation(const BGTargetedOperation&);
+    RankExecutionMode executionMode() const { return execution_mode_; }
+    BGLifecycleState bgLifecycle(uint32_t local_bg) const;
+    uint32_t bgGeneration(uint32_t local_bg) const;
+    bool bgHasPendingOperation(uint32_t local_bg) const;
+    const BGTargetedOperation& bgPendingOperation(uint32_t local_bg) const;
+    const std::array<uint32_t, kPIMBlocksPerBG>& physicalPIMBlockPair(uint32_t local_bg) const;
 
     union crf_t
     {
