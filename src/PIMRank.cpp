@@ -16,6 +16,7 @@
 
 #include <bitset>
 #include <iostream>
+#include <limits>
 
 #include "AddressMapping.h"
 #include "PIMCmd.h"
@@ -98,8 +99,47 @@ bool PIMRank::submitBGTargetedOperation(const BGTargetedOperation& operation)
     return true;
 }
 
+bool PIMRank::requestTargetedModeExit()
+{
+    if (execution_mode_ != RankExecutionMode::CSC_BG_TARGETED) return false;
+    execution_mode_ = RankExecutionMode::DRAINING;
+    return true;
+}
+
+void PIMRank::flushBG(uint32_t local_bg)
+{
+    if (local_bg >= kBGsPerRank) throw std::out_of_range("local BG");
+    auto& lifecycle = bg_lifecycle_[local_bg];
+    if (lifecycle == BGLifecycleState::ERROR || lifecycle == BGLifecycleState::FLUSHED) return;
+    lifecycle = BGLifecycleState::FLUSH_REQUESTED;
+    if (bg_pending_[local_bg].occupied) bg_pending_[local_bg].occupied = false;
+    lifecycle = (bg_active_[local_bg] || bg_completion_[local_bg])
+                    ? BGLifecycleState::DRAINING
+                    : BGLifecycleState::FLUSHED;
+}
+
+bool PIMRank::resetBG(uint32_t local_bg)
+{
+    if (local_bg >= kBGsPerRank) throw std::out_of_range("local BG");
+    if (bg_pending_[local_bg].occupied || bg_active_[local_bg] || bg_completion_[local_bg])
+    {
+        flushBG(local_bg);
+        return false;
+    }
+    if (pimblock_busy_mask_ & ((1U << bg_to_pimblocks_[local_bg][0]) |
+                               (1U << bg_to_pimblocks_[local_bg][1])))
+        throw std::logic_error("reset with busy physical PIMBlock");
+    bg_lifecycle_[local_bg] = BGLifecycleState::RESETTING;
+    if (bg_generation_[local_bg] == std::numeric_limits<uint32_t>::max())
+        throw std::overflow_error("BG generation exhausted");
+    ++bg_generation_[local_bg];
+    bg_lifecycle_[local_bg] = BGLifecycleState::IDLE;
+    return true;
+}
+
 void PIMRank::serviceBGTargeted(bool command_bus_busy, bool data_bus_busy)
 {
+    if (execution_mode_ == RankExecutionMode::DRAINING) targeted_stats_.rank_mode_drain_cycles++;
     for (uint32_t bg = 0; bg < kBGsPerRank; ++bg)
     {
         if (bg_active_[bg])
@@ -123,11 +163,27 @@ void PIMRank::serviceBGTargeted(bool command_bus_busy, bool data_bus_busy)
                 bg_active_[bg].reset();
             }
         }
+        if (bg_lifecycle_[bg] == BGLifecycleState::DRAINING)
+        {
+            targeted_stats_.per_bg_flush_drain_cycles[bg]++;
+            if (!bg_active_[bg] && !bg_completion_[bg] && !bg_pending_[bg].occupied)
+                bg_lifecycle_[bg] = BGLifecycleState::FLUSHED;
+        }
         if (bg_pending_[bg].occupied)
         {
             targeted_stats_.per_bg_ready_cycles[bg]++;
             targeted_stats_.per_bg_grant_wait_cycles[bg]++;
         }
+    }
+
+    if (execution_mode_ == RankExecutionMode::DRAINING)
+    {
+        bool outstanding = false;
+        for (uint32_t bg = 0; bg < kBGsPerRank; ++bg)
+            outstanding = outstanding || bg_pending_[bg].occupied || bg_active_[bg] ||
+                          bg_completion_[bg];
+        if (!outstanding) execution_mode_ = RankExecutionMode::IDLE;
+        return;
     }
 
     bool any_pending = false;
@@ -304,6 +360,9 @@ void PIMRank::controlPIM(BusPacket* packet)
 
     if (pimOpMode_)
     {
+        if (execution_mode_ != RankExecutionMode::IDLE)
+            throw std::logic_error("legacy/targeted rank mode conflict");
+        execution_mode_ = RankExecutionMode::LEGACY_RANK_WIDE;
         rank->mode_ = dramMode::HAB_PIM;
         pimPC_ = 0;
         lastJumpIdx_ = numJumpToBeTaken_ = lastRepeatIdx_ = numRepeatToBeDone_ = -1;
@@ -312,6 +371,8 @@ void PIMRank::controlPIM(BusPacket* packet)
     }
     else
     {
+        if (execution_mode_ == RankExecutionMode::LEGACY_RANK_WIDE)
+            execution_mode_ = RankExecutionMode::DRAINING;
         rank->mode_ = dramMode::HAB;
         PRINTC(RED, OUTLOG_CH_RA("HAB mode"));
     }

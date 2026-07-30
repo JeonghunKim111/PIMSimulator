@@ -89,12 +89,14 @@ class PIMRank : public SimulatorObject
         std::array<uint64_t, kBGsPerRank> per_bg_ready_cycles{};
         std::array<uint64_t, kBGsPerRank> per_bg_executing_cycles{};
         std::array<uint64_t, kBGsPerRank> per_bg_grant_wait_cycles{};
+        std::array<uint64_t, kBGsPerRank> per_bg_flush_drain_cycles{};
         std::array<uint64_t, 8> per_pimblock_active_cycles{};
         std::array<uint64_t, 8> per_pimblock_targeted_ops{};
         uint64_t rank_targeted_grants = 0;
         uint64_t rank_command_bus_stall_cycles = 0;
         uint64_t rank_resource_conflict_stall_cycles = 0;
         uint64_t round_robin_skip_count = 0;
+        uint64_t rank_mode_drain_cycles = 0;
     };
 
   private:
@@ -124,6 +126,9 @@ class PIMRank : public SimulatorObject
                   bool is_mac);
     bool isToggleCond(BusPacket* packet);
     bool submitBGTargetedOperation(const BGTargetedOperation&);
+    bool requestTargetedModeExit();
+    void flushBG(uint32_t local_bg);
+    bool resetBG(uint32_t local_bg);
     void serviceBGTargeted(bool command_bus_busy, bool data_bus_busy);
     bool pollBGTargetedCompletion(uint32_t local_bg, BGTargetedCompletion&);
     BGTargetedOperationState queryBGTargetedOperation(uint32_t local_bg, uint64_t operation_id) const;

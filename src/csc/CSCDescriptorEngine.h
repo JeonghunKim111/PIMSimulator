@@ -24,6 +24,7 @@ enum class CSCDescriptorState {
     SIMD_MUL, WAIT_TARGET_GRANT, WAIT_TARGET_COMPLETION, EMIT_PARTIALS, ADVANCE_CHUNK, NEXT_DESCRIPTOR, DONE, ERROR, FLUSHING
 };
 enum class CSCRequestPolicy { SERIALIZED, OVERLAPPED };
+enum class CSCResultStatus { RUNNING, COMPLETE, INCOMPLETE_FLUSHED, ERROR };
 
 struct CSCPartial {
     uint32_t row_idx, global_bg_id, descriptor_index, chunk_index, lane;
@@ -63,6 +64,7 @@ class CSCDescriptorEngine {
     void launch(const CSCBGImageView&, std::vector<CSCPartial>*);
     void tick();
     void flush();
+    void flushIncomplete();
     void reset();
     bool onRequestComplete(unsigned, uint64_t, uint64_t);
     bool onRequestComplete(unsigned, const DRAMSim::RequestToken&, uint64_t);
@@ -125,6 +127,7 @@ class CSCDescriptorEngine {
     CSCRequestTracker tracker_;
     CSCDescriptorState state_ = CSCDescriptorState::IDLE;
     bool busy_ = false, done_ = false, flush_requested_ = false, flush_completed_ = false;
+    bool incomplete_flush_requested_ = false;
     CSCError error_code_ = CSCError::NONE;
     std::string error_;
     CSCEngineCounters counters_;
@@ -158,6 +161,8 @@ class CSCNativeExecution {
     bool busy() const;
     bool done() const { return isTerminal(); }
     void flush();
+    void flushBG(uint32_t);
+    bool resetBG(uint32_t);
     void reset();
     bool isTerminal() const;
     bool isDone() const;
@@ -167,6 +172,8 @@ class CSCNativeExecution {
     int32_t failedEngine() const { return failed_engine_; }
     bool flushRequested() const { return flush_requested_; }
     bool flushComplete() const { return flush_completed_; }
+    CSCResultStatus bgResultStatus(uint32_t bg) const { return result_status_.at(bg); }
+    bool resultValid() const;
     bool hasOutstandingRequest() const { return !outstanding_.empty(); }
     bool hasPendingTransactions() const;
     bool hasUnconsumedCompletion() const;
@@ -212,6 +219,7 @@ class CSCNativeExecution {
     CSCRequestPolicy policy_;
     CSCExecutionCounters execution_stats_;
     std::array<uint64_t, 64> submit_reject_budget_{};
+    std::array<CSCResultStatus, 64> result_status_{};
 };
 
 }  // namespace csc_descriptor
