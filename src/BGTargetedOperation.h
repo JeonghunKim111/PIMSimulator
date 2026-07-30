@@ -39,6 +39,14 @@ enum class RankExecutionMode : uint8_t
     ERROR
 };
 
+enum class BGTargetedCompletionValidation : uint8_t
+{
+    ACCEPTED,
+    DUPLICATE,
+    UNKNOWN_OPERATION,
+    IDENTITY_MISMATCH
+};
+
 enum class BGLifecycleState : uint8_t
 {
     IDLE,

@@ -251,13 +251,47 @@ void PIMRank::serviceBGTargeted(bool command_bus_busy, bool data_bus_busy)
     }
 }
 
+BGTargetedCompletionValidation PIMRank::validateAndRetireBGTargetedCompletion(
+    uint32_t local_bg, const BGTargetedCompletion& candidate,
+    BGTargetedCompletion& completion)
+{
+    if (local_bg >= kBGsPerRank)
+    {
+        targeted_stats_.unknown_completion_rejections++;
+        return BGTargetedCompletionValidation::UNKNOWN_OPERATION;
+    }
+    if (bg_last_retired_[local_bg] &&
+        *bg_last_retired_[local_bg] == candidate.identity)
+    {
+        targeted_stats_.duplicate_completion_rejections++;
+        return BGTargetedCompletionValidation::DUPLICATE;
+    }
+    if (!bg_completion_[local_bg] ||
+        bg_completion_[local_bg]->identity.operation_id !=
+            candidate.identity.operation_id)
+    {
+        targeted_stats_.unknown_completion_rejections++;
+        return BGTargetedCompletionValidation::UNKNOWN_OPERATION;
+    }
+    if (!(bg_completion_[local_bg]->identity == candidate.identity))
+    {
+        targeted_stats_.identity_mismatch_rejections++;
+        return BGTargetedCompletionValidation::IDENTITY_MISMATCH;
+    }
+    completion = *bg_completion_[local_bg];
+    bg_last_retired_[local_bg] = completion.identity;
+    bg_completion_[local_bg].reset();
+    targeted_stats_.targeted_completions_retired++;
+    return BGTargetedCompletionValidation::ACCEPTED;
+}
+
 bool PIMRank::pollBGTargetedCompletion(uint32_t local_bg, BGTargetedCompletion& completion)
 {
     if (local_bg >= kBGsPerRank) throw std::out_of_range("local BG");
     if (!bg_completion_[local_bg]) return false;
-    completion = *bg_completion_[local_bg];
-    bg_completion_[local_bg].reset();
-    return true;
+    const BGTargetedCompletion candidate = *bg_completion_[local_bg];
+    return validateAndRetireBGTargetedCompletion(local_bg, candidate, completion) ==
+           BGTargetedCompletionValidation::ACCEPTED;
 }
 
 BGTargetedOperationState PIMRank::queryBGTargetedOperation(

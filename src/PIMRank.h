@@ -30,6 +30,7 @@ using namespace DRAMSim;
 
 namespace DRAMSim
 {
+struct PIMRankM6TestAccess;
 #define OUTLOG_ALL(msg)                                                                       \
     msg << " ch[" << getChanId() << "] ra[" << getRankId() << "] bg["                         \
         << config.addrMapping.bankgroupId(packet->bank) << "] ba[" << packet->bank << "] ro[" \
@@ -80,6 +81,7 @@ class PIMRank : public SimulatorObject
     std::array<std::array<uint32_t, kPIMBlocksPerBG>, kBGsPerRank> bg_to_pimblocks_{};
     std::array<std::optional<BGTargetedCompletion>, kBGsPerRank> bg_active_{};
     std::array<std::optional<BGTargetedCompletion>, kBGsPerRank> bg_completion_{};
+    std::array<std::optional<BGTargetedIdentity>, kBGsPerRank> bg_last_retired_{};
     uint32_t next_bg_rr_ = 0;
     uint8_t pimblock_busy_mask_ = 0;
 
@@ -97,6 +99,10 @@ class PIMRank : public SimulatorObject
         uint64_t rank_resource_conflict_stall_cycles = 0;
         uint64_t round_robin_skip_count = 0;
         uint64_t rank_mode_drain_cycles = 0;
+        uint64_t targeted_completions_retired = 0;
+        uint64_t duplicate_completion_rejections = 0;
+        uint64_t unknown_completion_rejections = 0;
+        uint64_t identity_mismatch_rejections = 0;
     };
 
   private:
@@ -104,6 +110,9 @@ class PIMRank : public SimulatorObject
 
     void validateTargetedTopology();
     void validateTargetedOperation(const BGTargetedOperation&) const;
+    BGTargetedCompletionValidation validateAndRetireBGTargetedCompletion(
+        uint32_t, const BGTargetedCompletion&, BGTargetedCompletion&);
+    friend struct PIMRankM6TestAccess;
 
   public:
     PIMRank(ostream& simLog, Configuration& configuration);

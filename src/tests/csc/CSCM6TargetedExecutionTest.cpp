@@ -7,6 +7,19 @@
 #include "PIMRank.h"
 #include "csc/CSCDescriptorEngine.h"
 
+namespace DRAMSim
+{
+struct PIMRankM6TestAccess
+{
+    static BGTargetedCompletionValidation injectCompletion(
+        PIMRank& rank, uint32_t local_bg, const BGTargetedCompletion& candidate)
+    {
+        BGTargetedCompletion ignored;
+        return rank.validateAndRetireBGTargetedCompletion(local_bg, candidate, ignored);
+    }
+};
+}
+
 namespace
 {
 using namespace DRAMSim;
@@ -466,4 +479,66 @@ TEST(CSCM6SchedulingComparisonTest, ImbalancedDecoupledCompletesBeforeLockstep)
     RecordProperty("decoupled_cycles", decoupled.counters.total_cycles);
     RecordProperty("lockstep_cycles", lockstep.counters.total_cycles);
     RecordProperty("barrier_wait_cycles", lockstep.counters.total_barrier_wait_cycles);
+}
+
+TEST(CSCM6CompletionNegativeTest, DuplicateCompletionIsRejectedExactlyOnce)
+{
+    TargetHarness h;
+    const auto operation = h.operation(0, 101);
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(operation));
+    h.pim.serviceBGTargeted(false, false);
+    h.nextCycle();
+    BGTargetedCompletion completion;
+    ASSERT_TRUE(h.pim.pollBGTargetedCompletion(0, completion));
+    EXPECT_EQ(PIMRankM6TestAccess::injectCompletion(h.pim, 0, completion),
+              BGTargetedCompletionValidation::DUPLICATE);
+    EXPECT_EQ(h.pim.targetedStatistics().targeted_completions_retired, 1);
+    EXPECT_EQ(h.pim.targetedStatistics().duplicate_completion_rejections, 1);
+}
+
+TEST(CSCM6CompletionNegativeTest, UnknownCompletionIsRejected)
+{
+    TargetHarness h;
+    BGTargetedCompletion completion;
+    completion.identity = h.operation(0, 404).identity;
+    EXPECT_EQ(PIMRankM6TestAccess::injectCompletion(h.pim, 0, completion),
+              BGTargetedCompletionValidation::UNKNOWN_OPERATION);
+    EXPECT_EQ(h.pim.targetedStatistics().unknown_completion_rejections, 1);
+    EXPECT_EQ(h.pim.targetedStatistics().targeted_completions_retired, 0);
+}
+
+TEST(CSCM6CompletionNegativeTest, CompletionOpcodeMismatchIsRejected)
+{
+    TargetHarness h;
+    const auto operation = h.operation(1, 202);
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(operation));
+    h.pim.serviceBGTargeted(false, false);
+    h.nextCycle();
+    BGTargetedCompletion corrupted;
+    corrupted.identity = operation.identity;
+    corrupted.identity.opcode = static_cast<BGTargetedOpcode>(0xff);
+    EXPECT_EQ(PIMRankM6TestAccess::injectCompletion(h.pim, 1, corrupted),
+              BGTargetedCompletionValidation::IDENTITY_MISMATCH);
+    BGTargetedCompletion valid;
+    EXPECT_TRUE(h.pim.pollBGTargetedCompletion(1, valid));
+    EXPECT_EQ(h.pim.targetedStatistics().identity_mismatch_rejections, 1);
+    EXPECT_EQ(h.pim.targetedStatistics().targeted_completions_retired, 1);
+}
+
+TEST(CSCM6CompletionNegativeTest, CompletionMaskMismatchIsRejected)
+{
+    TargetHarness h;
+    const auto operation = h.operation(2, 303);
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(operation));
+    h.pim.serviceBGTargeted(false, false);
+    h.nextCycle();
+    BGTargetedCompletion corrupted;
+    corrupted.identity = operation.identity;
+    corrupted.identity.pimblock_mask = kBGTargetSecondPIMBlock;
+    EXPECT_EQ(PIMRankM6TestAccess::injectCompletion(h.pim, 2, corrupted),
+              BGTargetedCompletionValidation::IDENTITY_MISMATCH);
+    BGTargetedCompletion valid;
+    EXPECT_TRUE(h.pim.pollBGTargetedCompletion(2, valid));
+    EXPECT_EQ(h.pim.targetedPIMBlockBusyMask(), 0);
+    EXPECT_EQ(h.pim.targetedStatistics().targeted_completions_retired, 1);
 }
