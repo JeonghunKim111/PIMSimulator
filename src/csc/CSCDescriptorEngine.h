@@ -16,6 +16,7 @@
 namespace csc_descriptor {
 
 struct CSCFreezeTestAccess;
+struct CSCAcceptanceTestAccess;
 
 enum class CSCDescriptorState {
     IDLE, FETCH_DESCRIPTOR, LOAD_X, FETCH_VALUE, FETCH_ROW_INDEX, WAIT_OPERANDS,
@@ -78,6 +79,7 @@ class CSCDescriptorEngine {
 
   private:
     friend struct CSCFreezeTestAccess;
+    friend struct CSCAcceptanceTestAccess;
     struct OperandSlot {
         bool required = false, created = false, accepted = false, ready = false;
         DRAMSim::RequestToken token{};
@@ -170,6 +172,7 @@ class CSCNativeExecution {
 
   private:
     friend struct CSCFreezeTestAccess;
+    friend struct CSCAcceptanceTestAccess;
     bool submit(CSCDescriptorEngine*, const DRAMSim::RequestToken&, uint64_t);
     DRAMSim::RequestToken makeToken(uint32_t, CSCRequestKind, uint64_t);
     void failGlobal(CSCError, const std::string&, int32_t engine = -1);
