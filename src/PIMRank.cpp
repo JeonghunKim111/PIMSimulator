@@ -196,6 +196,21 @@ bool PIMRank::pollBGTargetedCompletion(uint32_t local_bg, BGTargetedCompletion& 
     return true;
 }
 
+BGTargetedOperationState PIMRank::queryBGTargetedOperation(
+    uint32_t local_bg, uint64_t operation_id) const
+{
+    if (local_bg >= kBGsPerRank || !operation_id)
+        throw std::invalid_argument("targeted operation query identity");
+    if (bg_pending_[local_bg].occupied &&
+        bg_pending_[local_bg].operation.identity.operation_id == operation_id)
+        return BGTargetedOperationState::WAITING_FOR_GRANT;
+    if (bg_active_[local_bg] && bg_active_[local_bg]->identity.operation_id == operation_id)
+        return BGTargetedOperationState::EXECUTING;
+    if (bg_completion_[local_bg] && bg_completion_[local_bg]->identity.operation_id == operation_id)
+        return BGTargetedOperationState::COMPLETED;
+    throw std::logic_error("unknown targeted operation identity");
+}
+
 BGLifecycleState PIMRank::bgLifecycle(uint32_t local_bg) const
 {
     if (local_bg >= kBGsPerRank) throw std::out_of_range("local BG");

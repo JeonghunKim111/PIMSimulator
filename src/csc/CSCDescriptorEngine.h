@@ -1,6 +1,7 @@
 #ifndef CSC_DESCRIPTOR_ENGINE_H
 #define CSC_DESCRIPTOR_ENGINE_H
 
+#include "BGTargetedOperation.h"
 #include "PIMBlock.h"
 #include "csc/CSCRequestTracker.h"
 #include "csc/CSCTypes.h"
@@ -20,7 +21,7 @@ struct CSCAcceptanceTestAccess;
 
 enum class CSCDescriptorState {
     IDLE, FETCH_DESCRIPTOR, LOAD_X, FETCH_VALUE, FETCH_ROW_INDEX, WAIT_OPERANDS,
-    SIMD_MUL, EMIT_PARTIALS, ADVANCE_CHUNK, NEXT_DESCRIPTOR, DONE, ERROR, FLUSHING
+    SIMD_MUL, WAIT_TARGET_GRANT, WAIT_TARGET_COMPLETION, EMIT_PARTIALS, ADVANCE_CHUNK, NEXT_DESCRIPTOR, DONE, ERROR, FLUSHING
 };
 enum class CSCRequestPolicy { SERIALIZED, OVERLAPPED };
 
@@ -51,9 +52,14 @@ class CSCDescriptorEngine {
     using TokenSubmit = std::function<bool(CSCDescriptorEngine*, const DRAMSim::RequestToken&, uint64_t)>;
     using TokenFactory = std::function<DRAMSim::RequestToken(uint32_t, CSCRequestKind, uint64_t)>;
     using Address = std::function<uint64_t(uint32_t, CSCRequestKind, uint64_t)>;
+    using TargetSubmit = std::function<bool(CSCDescriptorEngine*, const DRAMSim::BGTargetedOperation&)>;
+    using TargetStatus = std::function<DRAMSim::BGTargetedOperationState(const DRAMSim::BGTargetedIdentity&)>;
+    using TargetPoll = std::function<bool(const DRAMSim::BGTargetedIdentity&, DRAMSim::BGTargetedCompletion&)>;
 
     CSCDescriptorEngine(uint32_t, DRAMSim::PIMBlock*, Submit, Address);
     CSCDescriptorEngine(uint32_t, DRAMSim::PIMBlock*, TokenSubmit, TokenFactory, Address);
+    CSCDescriptorEngine(uint32_t, TokenSubmit, TokenFactory, Address, TargetSubmit, TargetStatus,
+                        TargetPoll);
     void launch(const CSCBGImageView&, std::vector<CSCPartial>*);
     void tick();
     void flush();
@@ -103,6 +109,12 @@ class CSCDescriptorEngine {
     std::array<uint8_t, 32> value_staging_{}, index_staging_{};
     DRAMSim::BurstType result_staging_;
     DRAMSim::PIMBlock* datapath_;
+    TargetSubmit target_submit_;
+    TargetStatus target_status_;
+    TargetPoll target_poll_;
+    DRAMSim::BGTargetedOperation target_operation_{};
+    bool target_operation_valid_ = false;
+    uint64_t target_sequence_ = 0;
     Submit legacy_submit_;
     TokenSubmit token_submit_;
     TokenFactory token_factory_;
@@ -178,11 +190,13 @@ class CSCNativeExecution {
     void failGlobal(CSCError, const std::string&, int32_t engine = -1);
     void readComplete(unsigned, uint64_t, uint64_t);
     void tokenComplete(unsigned, const DRAMSim::RequestToken&, uint64_t);
+    bool submitTarget(CSCDescriptorEngine*, const DRAMSim::BGTargetedOperation&);
+    DRAMSim::BGTargetedOperationState targetStatus(const DRAMSim::BGTargetedIdentity&) const;
+    bool pollTarget(const DRAMSim::BGTargetedIdentity&, DRAMSim::BGTargetedCompletion&);
     void latchFailure(const CSCDescriptorEngine&);
     void updateMLP();
     struct Impl;
     std::unique_ptr<Impl> impl_;
-    std::vector<std::unique_ptr<DRAMSim::PIMBlock>> blocks_;
     std::vector<std::unique_ptr<CSCDescriptorEngine>> engines_;
     std::vector<CSCPartial> partials_;
     std::map<uint64_t, CSCDescriptorEngine*> outstanding_;

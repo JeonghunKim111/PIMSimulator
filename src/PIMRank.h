@@ -126,6 +126,7 @@ class PIMRank : public SimulatorObject
     bool submitBGTargetedOperation(const BGTargetedOperation&);
     void serviceBGTargeted(bool command_bus_busy, bool data_bus_busy);
     bool pollBGTargetedCompletion(uint32_t local_bg, BGTargetedCompletion&);
+    BGTargetedOperationState queryBGTargetedOperation(uint32_t local_bg, uint64_t operation_id) const;
     uint8_t targetedPIMBlockBusyMask() const { return pimblock_busy_mask_; }
     uint32_t nextBGRoundRobin() const { return next_bg_rr_; }
     const TargetedStatistics& targetedStatistics() const { return targeted_stats_; }
