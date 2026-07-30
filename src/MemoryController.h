@@ -82,6 +82,12 @@ class MemoryController : public SimulatorObject
     const PendingReadLookupStats& pendingReadLookupStats() const { return pendingReadLookupStats_; }
     size_t pendingTokenizedReadCount() const { return pendingTokenizedReadsById.size(); }
     size_t pendingLegacyReadCount() const { return pendingReadTransactions.size(); }
+    bool commandIssuedToRankThisCycle(uint32_t rank) const
+    {
+        return rank < command_issued_to_rank_this_cycle_.size() &&
+               command_issued_to_rank_this_cycle_[rank];
+    }
+    bool dataBusBusy() const { return outgoingDataPacket != nullptr; }
 
     // fields
     vector<Transaction*> transactionQueue;
@@ -113,6 +119,7 @@ class MemoryController : public SimulatorObject
     vector<Transaction*> pendingReadTransactions;
     unordered_map<uint64_t, Transaction*> pendingTokenizedReadsById;
     PendingReadLookupStats pendingReadLookupStats_;
+    vector<bool> command_issued_to_rank_this_cycle_;
     map<unsigned, unsigned> latencies;  // latencyValue -> latencyCount
     vector<bool> powerDown;
     vector<Rank*>* ranks;

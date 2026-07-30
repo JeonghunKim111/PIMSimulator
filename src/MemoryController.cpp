@@ -67,6 +67,7 @@ MemoryController::MemoryController(MemorySystem* parent, CSVWriter& csvOut_, ost
     // reserve memory for vectors
     transactionQueue.reserve(config.TRANS_QUEUE_DEPTH);
     powerDown = vector<bool>(config.NUM_RANKS, false);
+    command_issued_to_rank_this_cycle_ = vector<bool>(config.NUM_RANKS, false);
 
     grandTotalBankAccesses = totalReadsPerBank = totalWritesPerBank = totalActivatesPerBank =
         vector<uint64_t>(config.NUM_RANKS * config.NUM_BANKS, 0);
@@ -481,6 +482,8 @@ void MemoryController::addPendingRead(Transaction* transaction)
 
 void MemoryController::update()
 {
+    std::fill(command_issued_to_rank_this_cycle_.begin(),
+              command_issued_to_rank_this_cycle_.end(), false);
     updateBankState();
     // check for outgoing command packets and handle countdowns
     if (outgoingCmdPacket != NULL)
@@ -560,6 +563,9 @@ void MemoryController::update()
     // function returns true if there is something valid in poppedBusPacket
     if (commandQueue.pop(&poppedBusPacket))
     {
+        if (poppedBusPacket->rank >= command_issued_to_rank_this_cycle_.size())
+            throw std::logic_error("command bus rank ownership corruption");
+        command_issued_to_rank_this_cycle_[poppedBusPacket->rank] = true;
         updateCommandQueue(poppedBusPacket);
     }
 

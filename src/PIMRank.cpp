@@ -88,10 +88,111 @@ bool PIMRank::submitBGTargetedOperation(const BGTargetedOperation& operation)
         bg_lifecycle_[bg] == BGLifecycleState::ERROR_DRAINING ||
         bg_lifecycle_[bg] == BGLifecycleState::ERROR || bg_pending_[bg].occupied)
         return false;
+    if (execution_mode_ == RankExecutionMode::IDLE)
+        execution_mode_ = RankExecutionMode::CSC_BG_TARGETED;
+    if (execution_mode_ != RankExecutionMode::CSC_BG_TARGETED) return false;
     bg_pending_[bg].occupied = true;
     bg_pending_[bg].operation = operation;
     bg_pending_[bg].operation.state = BGTargetedOperationState::WAITING_FOR_GRANT;
     bg_lifecycle_[bg] = BGLifecycleState::RUNNING;
+    return true;
+}
+
+void PIMRank::serviceBGTargeted(bool command_bus_busy, bool data_bus_busy)
+{
+    for (uint32_t bg = 0; bg < kBGsPerRank; ++bg)
+    {
+        if (bg_active_[bg])
+        {
+            for (uint32_t bit = 0; bit < kPIMBlocksPerBG; ++bit)
+                if (bg_active_[bg]->identity.pimblock_mask & (1U << bit))
+                {
+                    const uint32_t block = bg_to_pimblocks_[bg][bit];
+                    targeted_stats_.per_pimblock_active_cycles[block]++;
+                }
+            targeted_stats_.per_bg_executing_cycles[bg]++;
+            if (bg_active_[bg]->completion_cycle <= currentClockCycle)
+            {
+                if (bg_completion_[bg])
+                    throw std::logic_error("duplicate unretired targeted completion");
+                const uint8_t mask = bg_active_[bg]->identity.pimblock_mask;
+                for (uint32_t bit = 0; bit < kPIMBlocksPerBG; ++bit)
+                    if (mask & (1U << bit))
+                        pimblock_busy_mask_ &= ~(1U << bg_to_pimblocks_[bg][bit]);
+                bg_completion_[bg] = bg_active_[bg];
+                bg_active_[bg].reset();
+            }
+        }
+        if (bg_pending_[bg].occupied)
+        {
+            targeted_stats_.per_bg_ready_cycles[bg]++;
+            targeted_stats_.per_bg_grant_wait_cycles[bg]++;
+        }
+    }
+
+    bool any_pending = false;
+    for (const auto& slot : bg_pending_) any_pending = any_pending || slot.occupied;
+    if (!any_pending || execution_mode_ != RankExecutionMode::CSC_BG_TARGETED) return;
+    if (command_bus_busy || data_bus_busy)
+    {
+        targeted_stats_.rank_command_bus_stall_cycles++;
+        return;
+    }
+
+    for (uint32_t offset = 0; offset < kBGsPerRank; ++offset)
+    {
+        const uint32_t bg = (next_bg_rr_ + offset) % kBGsPerRank;
+        if (!bg_pending_[bg].occupied)
+        {
+            targeted_stats_.round_robin_skip_count++;
+            continue;
+        }
+        if (bg_active_[bg] || bg_completion_[bg] ||
+            bg_lifecycle_[bg] != BGLifecycleState::RUNNING)
+        {
+            targeted_stats_.round_robin_skip_count++;
+            continue;
+        }
+        auto& operation = bg_pending_[bg].operation;
+        uint8_t physical_mask = 0;
+        for (uint32_t bit = 0; bit < kPIMBlocksPerBG; ++bit)
+            if (operation.identity.pimblock_mask & (1U << bit))
+                physical_mask |= 1U << bg_to_pimblocks_[bg][bit];
+        if (physical_mask & pimblock_busy_mask_)
+        {
+            targeted_stats_.rank_resource_conflict_stall_cycles++;
+            targeted_stats_.round_robin_skip_count++;
+            continue;
+        }
+
+        BGTargetedCompletion completion;
+        completion.identity = operation.identity;
+        completion.grant_cycle = currentClockCycle;
+        completion.completion_cycle = currentClockCycle + 1;
+        operation.state = BGTargetedOperationState::EXECUTING;
+        for (uint32_t bit = 0; bit < kPIMBlocksPerBG; ++bit)
+            if (operation.identity.pimblock_mask & (1U << bit))
+            {
+                const uint32_t block = bg_to_pimblocks_[bg][bit];
+                pimBlocks[block].mul(completion.results[bit], operation.contexts[bit].lhs,
+                                     operation.contexts[bit].rhs, operation.valid_count);
+                targeted_stats_.per_pimblock_targeted_ops[block]++;
+            }
+        pimblock_busy_mask_ |= physical_mask;
+        bg_active_[bg] = completion;
+        bg_pending_[bg].occupied = false;
+        targeted_stats_.rank_targeted_grants++;
+        next_bg_rr_ = (bg + 1) % kBGsPerRank;
+        return;
+    }
+}
+
+bool PIMRank::pollBGTargetedCompletion(uint32_t local_bg, BGTargetedCompletion& completion)
+{
+    if (local_bg >= kBGsPerRank) throw std::out_of_range("local BG");
+    if (!bg_completion_[local_bg]) return false;
+    completion = *bg_completion_[local_bg];
+    bg_completion_[local_bg].reset();
     return true;
 }
 

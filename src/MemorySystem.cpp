@@ -255,6 +255,10 @@ void MemorySystem::update()
         pendingTransactions.pop_front();
     }
     memoryController->update();
+    for (size_t i = 0; i < num_ranks_; ++i)
+        (*ranks)[i]->pimRank->serviceBGTargeted(
+            memoryController->commandIssuedToRankThisCycle(i),
+            memoryController->dataBusBusy() || (*ranks)[i]->dataBusBusy());
 
     // simply increments the currentClockCycle field for each object
     for (size_t i = 0; i < num_ranks_; i++)

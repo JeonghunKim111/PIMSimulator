@@ -13,6 +13,7 @@
 #ifndef _PIMRANK_H_
 #define _PIMRANK_H_
 
+#include <optional>
 #include <vector>
 
 #include "AddressMapping.h"
@@ -77,6 +78,27 @@ class PIMRank : public SimulatorObject
     std::array<uint32_t, kBGsPerRank> bg_generation_{};
     std::array<BGPendingSlot, kBGsPerRank> bg_pending_{};
     std::array<std::array<uint32_t, kPIMBlocksPerBG>, kBGsPerRank> bg_to_pimblocks_{};
+    std::array<std::optional<BGTargetedCompletion>, kBGsPerRank> bg_active_{};
+    std::array<std::optional<BGTargetedCompletion>, kBGsPerRank> bg_completion_{};
+    uint32_t next_bg_rr_ = 0;
+    uint8_t pimblock_busy_mask_ = 0;
+
+  public:
+    struct TargetedStatistics
+    {
+        std::array<uint64_t, kBGsPerRank> per_bg_ready_cycles{};
+        std::array<uint64_t, kBGsPerRank> per_bg_executing_cycles{};
+        std::array<uint64_t, kBGsPerRank> per_bg_grant_wait_cycles{};
+        std::array<uint64_t, 8> per_pimblock_active_cycles{};
+        std::array<uint64_t, 8> per_pimblock_targeted_ops{};
+        uint64_t rank_targeted_grants = 0;
+        uint64_t rank_command_bus_stall_cycles = 0;
+        uint64_t rank_resource_conflict_stall_cycles = 0;
+        uint64_t round_robin_skip_count = 0;
+    };
+
+  private:
+    TargetedStatistics targeted_stats_{};
 
     void validateTargetedTopology();
     void validateTargetedOperation(const BGTargetedOperation&) const;
@@ -102,6 +124,11 @@ class PIMRank : public SimulatorObject
                   bool is_mac);
     bool isToggleCond(BusPacket* packet);
     bool submitBGTargetedOperation(const BGTargetedOperation&);
+    void serviceBGTargeted(bool command_bus_busy, bool data_bus_busy);
+    bool pollBGTargetedCompletion(uint32_t local_bg, BGTargetedCompletion&);
+    uint8_t targetedPIMBlockBusyMask() const { return pimblock_busy_mask_; }
+    uint32_t nextBGRoundRobin() const { return next_bg_rr_; }
+    const TargetedStatistics& targetedStatistics() const { return targeted_stats_; }
     RankExecutionMode executionMode() const { return execution_mode_; }
     BGLifecycleState bgLifecycle(uint32_t local_bg) const;
     uint32_t bgGeneration(uint32_t local_bg) const;

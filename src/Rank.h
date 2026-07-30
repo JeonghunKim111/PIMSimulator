@@ -75,6 +75,7 @@ class Rank : public SimulatorObject
     int getRankId() const;
     void setRankId(int id);
     void update();
+    bool dataBusBusy() const { return outgoingDataPacket != nullptr; }
     void powerUp();
     void powerDown();
 
