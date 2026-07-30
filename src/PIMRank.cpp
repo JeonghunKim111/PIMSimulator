@@ -79,6 +79,53 @@ void PIMRank::validateTargetedOperation(const BGTargetedOperation& operation) co
             throw std::invalid_argument("selected PIMBlock has no operand context");
 }
 
+void PIMRank::beginBGError(uint32_t local_bg)
+{
+    if (local_bg >= kBGsPerRank) throw std::out_of_range("local BG");
+    bg_pending_[local_bg].occupied = false;
+    bg_lifecycle_[local_bg] = BGLifecycleState::ERROR_DRAINING;
+}
+
+void PIMRank::beginRankFatalError()
+{
+    execution_mode_ = RankExecutionMode::ERROR_DRAINING;
+    uint8_t active_mask = 0;
+    for (uint32_t bg = 0; bg < kBGsPerRank; ++bg)
+    {
+        bg_pending_[bg].occupied = false;
+        bg_lifecycle_[bg] = BGLifecycleState::ERROR_DRAINING;
+        if (bg_active_[bg])
+            for (uint32_t bit = 0; bit < kPIMBlocksPerBG; ++bit)
+                if (bg_active_[bg]->identity.pimblock_mask & (1U << bit))
+                    active_mask |= 1U << bg_to_pimblocks_[bg][bit];
+    }
+    pimblock_busy_mask_ = active_mask;
+}
+
+bool PIMRank::validateSharedOwnership()
+{
+    uint8_t expected = 0;
+    for (uint32_t bg = 0; bg < kBGsPerRank; ++bg)
+        if (bg_active_[bg])
+            for (uint32_t bit = 0; bit < kPIMBlocksPerBG; ++bit)
+                if (bg_active_[bg]->identity.pimblock_mask & (1U << bit))
+                {
+                    const uint8_t physical = 1U << bg_to_pimblocks_[bg][bit];
+                    if (expected & physical)
+                    {
+                        beginRankFatalError();
+                        return false;
+                    }
+                    expected |= physical;
+                }
+    if (expected != pimblock_busy_mask_)
+    {
+        beginRankFatalError();
+        return false;
+    }
+    return true;
+}
+
 bool PIMRank::submitBGTargetedOperation(const BGTargetedOperation& operation)
 {
     validateTargetedOperation(operation);
@@ -171,11 +218,14 @@ void PIMRank::serviceBGTargeted(bool command_bus_busy, bool data_bus_busy)
                 bg_active_[bg].reset();
             }
         }
-        if (bg_lifecycle_[bg] == BGLifecycleState::DRAINING)
+        if (bg_lifecycle_[bg] == BGLifecycleState::DRAINING ||
+            bg_lifecycle_[bg] == BGLifecycleState::ERROR_DRAINING)
         {
             targeted_stats_.per_bg_flush_drain_cycles[bg]++;
             if (!bg_active_[bg] && !bg_completion_[bg] && !bg_pending_[bg].occupied)
-                bg_lifecycle_[bg] = BGLifecycleState::FLUSHED;
+                bg_lifecycle_[bg] = bg_lifecycle_[bg] == BGLifecycleState::ERROR_DRAINING
+                                            ? BGLifecycleState::ERROR
+                                            : BGLifecycleState::FLUSHED;
         }
         if (bg_pending_[bg].occupied)
         {
@@ -184,13 +234,17 @@ void PIMRank::serviceBGTargeted(bool command_bus_busy, bool data_bus_busy)
         }
     }
 
-    if (execution_mode_ == RankExecutionMode::DRAINING)
+    if (execution_mode_ == RankExecutionMode::DRAINING ||
+        execution_mode_ == RankExecutionMode::ERROR_DRAINING)
     {
         bool outstanding = false;
         for (uint32_t bg = 0; bg < kBGsPerRank; ++bg)
             outstanding = outstanding || bg_pending_[bg].occupied || bg_active_[bg] ||
                           bg_completion_[bg];
-        if (!outstanding) execution_mode_ = RankExecutionMode::IDLE;
+        if (!outstanding)
+            execution_mode_ = execution_mode_ == RankExecutionMode::ERROR_DRAINING
+                                  ? RankExecutionMode::ERROR
+                                  : RankExecutionMode::IDLE;
         return;
     }
 
@@ -276,6 +330,7 @@ BGTargetedCompletionValidation PIMRank::validateAndRetireBGTargetedCompletion(
     if (!(bg_completion_[local_bg]->identity == candidate.identity))
     {
         targeted_stats_.identity_mismatch_rejections++;
+        beginBGError(local_bg);
         return BGTargetedCompletionValidation::IDENTITY_MISMATCH;
     }
     completion = *bg_completion_[local_bg];
@@ -325,6 +380,21 @@ bool PIMRank::bgHasPendingOperation(uint32_t local_bg) const
 {
     if (local_bg >= kBGsPerRank) throw std::out_of_range("local BG");
     return bg_pending_[local_bg].occupied;
+}
+
+uint64_t PIMRank::targetedOutstandingCount() const
+{
+    uint64_t count = 0;
+    for (uint32_t bg = 0; bg < kBGsPerRank; ++bg)
+        count += bg_pending_[bg].occupied + bool(bg_active_[bg]) + bool(bg_completion_[bg]);
+    return count;
+}
+
+uint64_t PIMRank::targetedPendingCompletionCount() const
+{
+    uint64_t count = 0;
+    for (const auto& completion : bg_completion_) count += bool(completion);
+    return count;
 }
 
 const BGTargetedOperation& PIMRank::bgPendingOperation(uint32_t local_bg) const

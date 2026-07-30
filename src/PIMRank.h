@@ -110,6 +110,9 @@ class PIMRank : public SimulatorObject
 
     void validateTargetedTopology();
     void validateTargetedOperation(const BGTargetedOperation&) const;
+    void beginBGError(uint32_t);
+    void beginRankFatalError();
+    bool validateSharedOwnership();
     BGTargetedCompletionValidation validateAndRetireBGTargetedCompletion(
         uint32_t, const BGTargetedCompletion&, BGTargetedCompletion&);
     friend struct PIMRankM6TestAccess;
@@ -142,6 +145,8 @@ class PIMRank : public SimulatorObject
     bool pollBGTargetedCompletion(uint32_t local_bg, BGTargetedCompletion&);
     BGTargetedOperationState queryBGTargetedOperation(uint32_t local_bg, uint64_t operation_id) const;
     uint8_t targetedPIMBlockBusyMask() const { return pimblock_busy_mask_; }
+    uint64_t targetedOutstandingCount() const;
+    uint64_t targetedPendingCompletionCount() const;
     uint32_t nextBGRoundRobin() const { return next_bg_rr_; }
     const TargetedStatistics& targetedStatistics() const { return targeted_stats_; }
     RankExecutionMode executionMode() const { return execution_mode_; }

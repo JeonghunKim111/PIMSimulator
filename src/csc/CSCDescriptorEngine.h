@@ -14,10 +14,13 @@
 #include <string>
 #include <vector>
 
+namespace DRAMSim { class PIMRank; }
+
 namespace csc_descriptor {
 
 struct CSCFreezeTestAccess;
 struct CSCAcceptanceTestAccess;
+struct CSCM6CompletionTestAccess;
 
 enum class CSCDescriptorState {
     IDLE, FETCH_DESCRIPTOR, LOAD_X, FETCH_VALUE, FETCH_ROW_INDEX, WAIT_OPERANDS,
@@ -213,6 +216,7 @@ class CSCNativeExecution {
   private:
     friend struct CSCFreezeTestAccess;
     friend struct CSCAcceptanceTestAccess;
+    friend struct CSCM6CompletionTestAccess;
     bool submit(CSCDescriptorEngine*, const DRAMSim::RequestToken&, uint64_t);
     DRAMSim::RequestToken makeToken(uint32_t, CSCRequestKind, uint64_t);
     void failGlobal(CSCError, const std::string&, int32_t engine = -1);
@@ -223,6 +227,7 @@ class CSCNativeExecution {
     bool pollTarget(const DRAMSim::BGTargetedIdentity&, DRAMSim::BGTargetedCompletion&);
     void latchFailure(const CSCDescriptorEngine&);
     void updateMLP();
+    DRAMSim::PIMRank& targetRank(uint32_t);
     struct Impl;
     std::unique_ptr<Impl> impl_;
     std::vector<std::unique_ptr<CSCDescriptorEngine>> engines_;

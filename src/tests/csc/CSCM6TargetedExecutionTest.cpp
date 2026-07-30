@@ -17,6 +17,35 @@ struct PIMRankM6TestAccess
         BGTargetedCompletion ignored;
         return rank.validateAndRetireBGTargetedCompletion(local_bg, candidate, ignored);
     }
+    static bool corruptBusyMaskAndValidate(PIMRank& rank, uint8_t extra_bit)
+    {
+        rank.pimblock_busy_mask_ |= extra_bit;
+        return rank.validateSharedOwnership();
+    }
+};
+}
+
+namespace csc_descriptor
+{
+struct CSCM6CompletionTestAccess
+{
+    static uint32_t generation(const CSCNativeExecution& execution)
+    {
+        return execution.generation_;
+    }
+    static bool submitTarget(CSCNativeExecution& execution, uint32_t bg,
+                             const DRAMSim::BGTargetedOperation& operation)
+    {
+        return execution.submitTarget(execution.engines_.at(bg).get(), operation);
+    }
+    static DRAMSim::PIMRank& rank(CSCNativeExecution& execution, uint32_t bg)
+    {
+        return execution.targetRank(bg);
+    }
+    static uint64_t memoryOutstanding(const CSCNativeExecution& execution)
+    {
+        return execution.outstanding_.size();
+    }
 };
 }
 
@@ -541,4 +570,123 @@ TEST(CSCM6CompletionNegativeTest, CompletionMaskMismatchIsRejected)
     EXPECT_TRUE(h.pim.pollBGTargetedCompletion(2, valid));
     EXPECT_EQ(h.pim.targetedPIMBlockBusyMask(), 0);
     EXPECT_EQ(h.pim.targetedStatistics().targeted_completions_retired, 1);
+}
+
+TEST(CSCM6ErrorIsolationTest, BGLocalCompletionErrorDrainsOnlyThatBG)
+{
+    TargetHarness h;
+    const auto bad = h.operation(0, 501);
+    const auto good = h.operation(1, 502);
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(bad));
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(good));
+    h.pim.serviceBGTargeted(false, false);
+    h.nextCycle();
+    BGTargetedCompletion corrupted;
+    corrupted.identity = bad.identity;
+    corrupted.identity.pimblock_mask = kBGTargetSecondPIMBlock;
+    EXPECT_EQ(PIMRankM6TestAccess::injectCompletion(h.pim, 0, corrupted),
+              BGTargetedCompletionValidation::IDENTITY_MISMATCH);
+    EXPECT_EQ(h.pim.bgLifecycle(0), BGLifecycleState::ERROR_DRAINING);
+    EXPECT_EQ(h.pim.bgLifecycle(1), BGLifecycleState::RUNNING);
+    BGTargetedCompletion bad_completion;
+    ASSERT_TRUE(h.pim.pollBGTargetedCompletion(0, bad_completion));
+    h.nextCycle();
+    EXPECT_EQ(h.pim.bgLifecycle(0), BGLifecycleState::ERROR);
+    EXPECT_EQ(h.pim.executionMode(), RankExecutionMode::CSC_BG_TARGETED);
+    h.nextCycle();
+    BGTargetedCompletion good_completion;
+    ASSERT_TRUE(h.pim.pollBGTargetedCompletion(1, good_completion));
+    EXPECT_EQ(good_completion.identity.operation_id, good.identity.operation_id);
+    EXPECT_NE(h.pim.executionMode(), RankExecutionMode::ERROR);
+}
+
+TEST(CSCM6ErrorIsolationTest, SharedPIMBlockOwnershipErrorEscalatesRank)
+{
+    TargetHarness h;
+    ASSERT_TRUE(h.pim.submitBGTargetedOperation(h.operation(0, 601)));
+    h.pim.serviceBGTargeted(false, false);
+    ASSERT_NE(h.pim.targetedPIMBlockBusyMask(), 0);
+    EXPECT_FALSE(PIMRankM6TestAccess::corruptBusyMaskAndValidate(h.pim, 1U << 1));
+    EXPECT_EQ(h.pim.executionMode(), RankExecutionMode::ERROR_DRAINING);
+    h.nextCycle();
+    BGTargetedCompletion completion;
+    ASSERT_TRUE(h.pim.pollBGTargetedCompletion(0, completion));
+    h.nextCycle();
+    EXPECT_EQ(h.pim.executionMode(), RankExecutionMode::ERROR);
+    EXPECT_EQ(h.pim.bgLifecycle(0), BGLifecycleState::ERROR);
+    EXPECT_EQ(h.pim.targetedOutstandingCount(), 0);
+    EXPECT_EQ(h.pim.targetedPendingCompletionCount(), 0);
+    EXPECT_EQ(h.pim.targetedPIMBlockBusyMask(), 0);
+    EXPECT_FALSE(h.pim.submitBGTargetedOperation(h.operation(1, 602)));
+}
+
+TEST(CSCM6ErrorIsolationTest, AcceptedMemoryAndTargetedOpDrainTogether)
+{
+    using namespace csc_descriptor;
+    std::array<std::vector<uint8_t>, 64> values, rows;
+    std::array<std::vector<CSCDescriptor>, 64> descriptors;
+    std::array<std::vector<float>, 64> x;
+    std::array<CSCBGImageView, 64> views;
+    for (uint32_t bg = 0; bg < 64; ++bg)
+    {
+        values[bg].resize(32);
+        rows[bg].resize(32);
+        x[bg].push_back(2.0F);
+        views[bg] = {&values[bg], &rows[bg], &descriptors[bg], &x[bg]};
+    }
+    const float value = 3.0F;
+    const uint32_t row0 = 0, row1 = 1;
+    std::memcpy(values[0].data(), &value, 4);
+    std::memcpy(rows[0].data(), &row0, 4);
+    std::memcpy(values[1].data(), &value, 4);
+    std::memcpy(rows[1].data(), &row1, 4);
+    descriptors[0].push_back({0, 0, 1, 0, 0, 0});
+    descriptors[1].push_back({0, 0, 1, 0, 1, 1});
+
+    CSCNativeExecution execution;
+    execution.launch(views, 2, 2);
+    uint64_t guard = 0;
+    while (!execution.hasOutstandingRequest() && guard++ < 1000) execution.tick();
+    ASSERT_TRUE(execution.hasOutstandingRequest());
+
+    BGTargetedOperation operation;
+    operation.identity.operation_id = 0xf000000000000001ULL;
+    operation.identity.channel = 0;
+    operation.identity.rank = 0;
+    operation.identity.local_bg = 0;
+    operation.identity.pimblock_mask = kBGTargetFirstPIMBlock;
+    operation.identity.worker_id = 0;
+    operation.identity.sequence = 1;
+    operation.identity.generation = CSCM6CompletionTestAccess::generation(execution);
+    operation.valid_count = 1;
+    operation.contexts[0].valid = true;
+    operation.contexts[0].lhs.fp32Data_[0] = 3.0F;
+    operation.contexts[0].rhs.fp32Data_[0] = 2.0F;
+    ASSERT_TRUE(CSCM6CompletionTestAccess::submitTarget(execution, 0, operation));
+    auto& rank = CSCM6CompletionTestAccess::rank(execution, 0);
+    while (!rank.targetedPIMBlockBusyMask() && guard++ < 2000) execution.tick();
+    ASSERT_NE(rank.targetedPIMBlockBusyMask(), 0);
+    ASSERT_GT(CSCM6CompletionTestAccess::memoryOutstanding(execution), 0);
+
+    execution.flushBG(0);
+    BGTargetedCompletion completion;
+    while ((execution.hasOutstandingRequest() || rank.targetedOutstandingCount()) &&
+           guard++ < 200000)
+    {
+        execution.tick();
+        rank.pollBGTargetedCompletion(0, completion);
+    }
+    ASSERT_LT(guard, 200000);
+    while (!execution.done() && guard++ < 200000) execution.tick();
+    EXPECT_TRUE(execution.isDone());
+    EXPECT_EQ(execution.bgResultStatus(0), CSCResultStatus::INCOMPLETE_FLUSHED);
+    EXPECT_EQ(CSCM6CompletionTestAccess::memoryOutstanding(execution), 0);
+    EXPECT_EQ(rank.targetedOutstandingCount(), 0);
+    EXPECT_EQ(rank.targetedPendingCompletionCount(), 0);
+    EXPECT_EQ(rank.targetedPIMBlockBusyMask(), 0);
+    bool bg1_partial = false;
+    for (const auto& partial : execution.partials())
+        if (partial.global_bg_id == 1 && partial.row_idx == 1 && partial.value == 6.0F)
+            bg1_partial = true;
+    EXPECT_TRUE(bg1_partial);
 }
