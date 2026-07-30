@@ -96,7 +96,7 @@ MemoryController::MemoryController(MemorySystem* parent, CSVWriter& csvOut_, ost
         parentMemorySystem, csvOut, dramsimLog, config, totalTransactions, grandTotalBankAccesses,
         totalReadsPerRank, totalWritesPerRank, totalReadsPerBank, totalWritesPerBank,
         totalActivatesPerRank, totalActivatesPerBank, totalRefreshes, backgroundEnergy, burstEnergy,
-        actpreEnergy, refreshEnergy, aluPIMEnergy, refreshEnergy, pendingReadTransactions);
+        actpreEnergy, refreshEnergy, aluPIMEnergy, refreshEnergy, pendingReadTransactions, pendingTokenizedReadsById);
 }
 
 // get a bus packet from either data or cmd bus
@@ -358,7 +358,9 @@ void MemoryController::updateTransactionQueue()
             // If we have a read, save the transaction so when the data comes back
             // in a bus packet, we can staple it back into a transaction and return it
             if (transaction->transactionType == DATA_READ)
-                pendingReadTransactions.push_back(transaction);
+            {
+                addPendingRead(transaction);
+            }
             else
                 // just delete the transaction now that it's a buspacket
                 delete transaction;
@@ -461,6 +463,22 @@ void MemoryController::updateRefresh()
         (*ranks)[refreshRank]->refreshWaiting = true;
 }
 
+void MemoryController::addPendingRead(Transaction* transaction)
+{
+    if (transaction->requestToken.valid())
+    {
+        const uint64_t requestId = transaction->requestToken.request_id;
+        if (!pendingTokenizedReadsById.emplace(requestId, transaction).second)
+        {
+            pendingReadLookupStats_.duplicate_request_id_count++;
+            ERROR("Duplicate tokenized pending read request ID " << requestId);
+            abort();
+        }
+    }
+    else
+        pendingReadTransactions.push_back(transaction);
+}
+
 void MemoryController::update()
 {
     updateBankState();
@@ -554,38 +572,60 @@ void MemoryController::update()
             PRINTN(" -- MC Issuing to CPU bus : " << *returnTransaction[0]);
         totalTransactions++;
 
-        bool foundMatch = false;
-        // find the pending read transaction to calculate latency
-        for (size_t i = 0; i < pendingReadTransactions.size(); i++)
+        Transaction* pendingRead = NULL;
+        bool tokenizedRead = false;
+        uint64_t completedRequestId = 0;
+        size_t legacyPendingIndex = pendingReadTransactions.size();
+        if (returnTransaction[0]->requestToken.valid())
         {
-            if ((returnTransaction[0]->requestToken.valid() &&
-                 pendingReadTransactions[i]->requestToken ==
-                     returnTransaction[0]->requestToken) ||
-                (!returnTransaction[0]->requestToken.valid() &&
-                 pendingReadTransactions[i]->address == returnTransaction[0]->address))
+            pendingReadLookupStats_.tokenized_map_lookup_count++;
+            tokenizedRead = true;
+            completedRequestId = returnTransaction[0]->requestToken.request_id;
+            const uint64_t requestId = completedRequestId;
+            auto pending = pendingTokenizedReadsById.find(requestId);
+            if (pending == pendingTokenizedReadsById.end())
             {
-                unsigned chan, rank, bank, row, col;
-                config.addrMapping.addressMapping(returnTransaction[0]->address, chan, rank, bank,
-                                                  row, col);
-                memoryContStats->insertHistogram(
-                    currentClockCycle - pendingReadTransactions[i]->timeAdded, rank, bank);
-                // FIXME. Is it correct?
-                // memcpy(pendingReadTransactions[i]->data,
-                // returnTransaction[0]->data, config.BL * (JEDEC_DATA_BUS_BITS / 8));
-                returnReadData(pendingReadTransactions[i]);
-
-                delete pendingReadTransactions[i];
-                pendingReadTransactions.erase(pendingReadTransactions.begin() + i);
-                foundMatch = true;
-                break;
+                pendingReadLookupStats_.unknown_request_id_count++;
+                ERROR("Unknown tokenized pending read request ID " << requestId);
+                abort();
+            }
+            pendingRead = pending->second;
+            if (!(pendingRead->requestToken == returnTransaction[0]->requestToken))
+            {
+                pendingReadLookupStats_.unknown_request_id_count++;
+                ERROR("Tokenized pending read full-token mismatch for request ID " << requestId);
+                abort();
             }
         }
-        if (!foundMatch)
+        else
         {
-            ERROR("Can't find a matching transaction for 0x" << hex << returnTransaction[0]->address
-                                                             << dec);
-            abort();
+            for (size_t i = 0; i < pendingReadTransactions.size(); i++)
+            {
+                pendingReadLookupStats_.legacy_linear_lookup_count++;
+                if (pendingReadTransactions[i]->address == returnTransaction[0]->address)
+                {
+                    pendingRead = pendingReadTransactions[i];
+                    legacyPendingIndex = i;
+                    break;
+                }
+            }
+            if (pendingRead == NULL)
+            {
+                ERROR("Can't find a matching transaction for 0x"
+                      << hex << returnTransaction[0]->address << dec);
+                abort();
+            }
         }
+
+        unsigned chan, rank, bank, row, col;
+        config.addrMapping.addressMapping(returnTransaction[0]->address, chan, rank, bank, row, col);
+        memoryContStats->insertHistogram(currentClockCycle - pendingRead->timeAdded, rank, bank);
+        returnReadData(pendingRead);
+        delete pendingRead;
+        if (tokenizedRead)
+            pendingTokenizedReadsById.erase(completedRequestId);
+        else
+            pendingReadTransactions.erase(pendingReadTransactions.begin() + legacyPendingIndex);
         delete returnTransaction[0];
         returnTransaction.erase(returnTransaction.begin());
     }
@@ -637,6 +677,7 @@ MemoryController::~MemoryController()
     // ERROR("MEMORY CONTROLLER DESTRUCTOR");
     // abort();
     for (size_t i = 0; i < pendingReadTransactions.size(); i++) delete pendingReadTransactions[i];
+    for (auto& pending : pendingTokenizedReadsById) delete pending.second;
     for (size_t i = 0; i < returnTransaction.size(); i++) delete returnTransaction[i];
     delete memoryContStats;
 }
@@ -800,7 +841,7 @@ void MemoryControllerStats::printStats(bool finalStats, unsigned myChannel,
         }
     }
 
-    PRINTC(PRINT_CHAN_STAT, endl << " == Pending Transactions : " << pendingReadTransactions.size()
+    PRINTC(PRINT_CHAN_STAT, endl << " == Pending Transactions : " << pendingReadTransactions.size() + pendingTokenizedReadsById.size()
                                  << " (" << currentClockCycle << ")==");
 
     if (LOG_OUTPUT)

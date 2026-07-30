@@ -32,6 +32,7 @@
 #define MEMORYCONTROLLER_H
 
 #include <map>
+#include <unordered_map>
 #include <vector>
 
 #include "BankState.h"
@@ -51,6 +52,16 @@ namespace DRAMSim
 class Rank;
 class MemorySystem;
 class MemoryControllerStats;
+struct CSCM6PreparationTestAccess;
+
+struct PendingReadLookupStats
+{
+    uint64_t tokenized_map_lookup_count = 0;
+    uint64_t legacy_linear_lookup_count = 0;
+    uint64_t tokenized_linear_lookup_count = 0;
+    uint64_t duplicate_request_id_count = 0;
+    uint64_t unknown_request_id_count = 0;
+};
 class MemoryController : public SimulatorObject
 {
   public:
@@ -68,11 +79,15 @@ class MemoryController : public SimulatorObject
     void resetStats();
     bool WillAcceptTransaction();
     bool addBarrier();
+    const PendingReadLookupStats& pendingReadLookupStats() const { return pendingReadLookupStats_; }
+    size_t pendingTokenizedReadCount() const { return pendingTokenizedReadsById.size(); }
+    size_t pendingLegacyReadCount() const { return pendingReadTransactions.size(); }
 
     // fields
     vector<Transaction*> transactionQueue;
 
   private:
+    friend struct CSCM6PreparationTestAccess;
     ostream& dramsimLog;
     vector<vector<BankState>> bankStates;
 
@@ -82,6 +97,7 @@ class MemoryController : public SimulatorObject
     void updateTransactionQueue();
     void updateBankState();
     void updateRefresh();
+    void addPendingRead(Transaction* transaction);
     void setBankStatesRW(size_t rank, size_t bank, uint64_t nextRead, uint64_t nextWrite);
     void setBankStates(size_t rank, size_t bank, CurrentBankState currentBankState,
                        BusPacketType lastCommand, uint64_t stateChangeCountdown, uint64_t nextAct);
@@ -95,6 +111,8 @@ class MemoryController : public SimulatorObject
     vector<unsigned> writeDataCountdown;
     vector<Transaction*> returnTransaction;
     vector<Transaction*> pendingReadTransactions;
+    unordered_map<uint64_t, Transaction*> pendingTokenizedReadsById;
+    PendingReadLookupStats pendingReadLookupStats_;
     map<unsigned, unsigned> latencies;  // latencyValue -> latencyCount
     vector<bool> powerDown;
     vector<Rank*>* ranks;
@@ -136,7 +154,8 @@ class MemoryControllerStats
                           vector<uint64_t>& backgroundE, vector<uint64_t>& burstE,
                           vector<uint64_t>& actpreE, vector<uint64_t>& refreshE,
                           vector<uint64_t>& aluPIME, vector<uint64_t>& readPIME,
-                          vector<Transaction*>& pendingReadTrans)
+                          vector<Transaction*>& pendingReadTrans,
+                          unordered_map<uint64_t, Transaction*>& pendingTokenizedReads)
         : csvOut(csvOut_),
           dramsimLog(simLog),
           config(configuration),
@@ -155,7 +174,8 @@ class MemoryControllerStats
           refreshEnergy(refreshE),
           aluPIMEnergy(aluPIME),
           readPIMEnergy(readPIME),
-          pendingReadTransactions(pendingReadTrans)
+          pendingReadTransactions(pendingReadTrans),
+          pendingTokenizedReadsById(pendingTokenizedReads)
     {
         parentMemorySystem = parent;
         totalEpochLatency = vector<uint64_t>(config.NUM_RANKS * config.NUM_BANKS, 0);
@@ -188,6 +208,7 @@ class MemoryControllerStats
     vector<uint64_t>& aluPIMEnergy;
     vector<uint64_t>& readPIMEnergy;
     vector<Transaction*>& pendingReadTransactions;
+    unordered_map<uint64_t, Transaction*>& pendingTokenizedReadsById;
 
     uint64_t currentClockCycle;
     double totalBandwidth;
