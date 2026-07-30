@@ -24,6 +24,7 @@ enum class CSCDescriptorState {
     SIMD_MUL, WAIT_TARGET_GRANT, WAIT_TARGET_COMPLETION, EMIT_PARTIALS, ADVANCE_CHUNK, NEXT_DESCRIPTOR, DONE, ERROR, FLUSHING
 };
 enum class CSCRequestPolicy { SERIALIZED, OVERLAPPED };
+enum class CSCSchedulingPolicy { BG_DECOUPLED, BARRIER_LOCKSTEP_REFERENCE };
 enum class CSCResultStatus { RUNNING, COMPLETE, INCOMPLETE_FLUSHED, ERROR };
 
 struct CSCPartial {
@@ -84,6 +85,7 @@ class CSCDescriptorEngine {
     const CSCRequestTracker& tracker() const { return tracker_; }
     uint32_t globalBG() const { return global_bg_id_; }
     uint64_t maximumOutstanding() const { return maximum_outstanding_; }
+    uint64_t progressEpoch() const { return progress_epoch_; }
 
   private:
     friend struct CSCFreezeTestAccess;
@@ -106,6 +108,7 @@ class CSCDescriptorEngine {
     uint32_t global_bg_id_, descriptor_pointer_ = 0, remaining_nnz_ = 0, chunk_offset_ = 0;
     uint32_t valid_count_ = 0, chunk_index_ = 0;
     uint64_t local_sequence_ = 0, maximum_outstanding_ = 0;
+    uint64_t progress_epoch_ = 0;
     CSCDescriptor current_{};
     float x_j_ = 0;
     std::array<uint8_t, 32> value_staging_{}, index_staging_{};
@@ -149,6 +152,9 @@ struct CSCExecutionCounters : CSCEngineCounters {
     std::array<uint64_t, kCSCGlobalBGCount> per_bg_ready_cycles{}, per_bg_executing_cycles{};
     std::array<uint64_t, kCSCGlobalBGCount> per_bg_memory_wait_cycles{}, per_bg_grant_wait_cycles{};
     std::array<uint64_t, kCSCGlobalBGCount> per_bg_flush_drain_cycles{};
+    std::array<uint64_t, kCSCGlobalBGCount> per_bg_barrier_wait_cycles{};
+    std::array<uint64_t, kCSCGlobalBGCount> per_bg_idle_cycles{};
+    std::array<uint64_t, kCSCGlobalBGCount> per_bg_completion_cycle{};
     std::array<uint64_t, 128> per_pimblock_active_cycles{}, per_pimblock_targeted_ops{};
     uint64_t rank_targeted_grants = 0, rank_command_bus_stall_cycles = 0;
     uint64_t rank_resource_conflict_stall_cycles = 0, rank_mode_drain_cycles = 0;
@@ -161,7 +167,9 @@ struct CSCExecutionCounters : CSCEngineCounters {
 
 class CSCNativeExecution {
   public:
-    explicit CSCNativeExecution(CSCRequestPolicy policy = CSCRequestPolicy::OVERLAPPED);
+    explicit CSCNativeExecution(
+        CSCRequestPolicy policy = CSCRequestPolicy::OVERLAPPED,
+        CSCSchedulingPolicy scheduling_policy = CSCSchedulingPolicy::BG_DECOUPLED);
     ~CSCNativeExecution();
     void launch(const std::array<CSCBGImageView, 64>&, uint32_t, uint64_t);
     void tick();
@@ -191,6 +199,7 @@ class CSCNativeExecution {
     uint64_t cycle() const { return cycle_; }
     uint64_t addressFor(uint32_t, CSCRequestKind, uint64_t);
     CSCRequestPolicy policy() const { return policy_; }
+    CSCSchedulingPolicy schedulingPolicy() const { return scheduling_policy_; }
     void setSubmitRejectBudget(uint32_t bg, uint64_t count) {
         if (bg >= 64) throw std::out_of_range("CSC BG");
         submit_reject_budget_[bg] = count;
@@ -224,6 +233,7 @@ class CSCNativeExecution {
     int32_t failed_engine_ = -1;
     std::string error_message_;
     CSCRequestPolicy policy_;
+    CSCSchedulingPolicy scheduling_policy_;
     CSCExecutionCounters execution_stats_;
     std::array<uint64_t, 64> submit_reject_budget_{};
     std::array<CSCResultStatus, 64> result_status_{};

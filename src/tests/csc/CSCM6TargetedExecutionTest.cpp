@@ -330,3 +330,52 @@ TEST(CSCM6ModeIsolationTest, DifferentRanksMayUseDifferentModes)
     EXPECT_EQ(other.targetedStatistics().rank_targeted_grants, 0);
     EXPECT_EQ(other.targetedStatistics().rank_command_bus_stall_cycles, 1);
 }
+
+TEST(CSCM6SchedulingComparisonTest, BarrierWaitsAtChunkBoundaryAndFinishedBGDoesNotDeadlock)
+{
+    using namespace csc_descriptor;
+    std::array<std::vector<uint8_t>, 64> values, rows;
+    std::array<std::vector<CSCDescriptor>, 64> descriptors;
+    std::array<std::vector<float>, 64> x;
+    std::array<CSCBGImageView, 64> views;
+    for (uint32_t bg = 0; bg < 64; ++bg)
+    {
+        values[bg].resize(32);
+        rows[bg].resize(32);
+        x[bg].push_back(2.0F);
+        views[bg] = {&values[bg], &rows[bg], &descriptors[bg], &x[bg]};
+    }
+    for (uint32_t bg = 0; bg < 2; ++bg)
+    {
+        const float value = float(bg + 1);
+        const uint32_t row = bg;
+        std::memcpy(values[bg].data(), &value, sizeof(value));
+        std::memcpy(rows[bg].data(), &row, sizeof(row));
+        descriptors[bg].push_back({0, 0, 1, 0, 0, bg});
+    }
+    CSCNativeExecution execution(CSCRequestPolicy::OVERLAPPED,
+                                 CSCSchedulingPolicy::BARRIER_LOCKSTEP_REFERENCE);
+    EXPECT_EQ(execution.schedulingPolicy(),
+              CSCSchedulingPolicy::BARRIER_LOCKSTEP_REFERENCE);
+    execution.setSubmitRejectBudget(0, 20);
+    execution.launch(views, 2, 2);
+    uint64_t guard = 0;
+    while (!execution.done() && guard++ < 20000) execution.tick();
+    ASSERT_TRUE(execution.isDone()) << " failed=" << execution.hasFailed() << " error=" << execution.errorMessage() << " bg0state=" << int(execution.engine(0).state()) << " bg1state=" << int(execution.engine(1).state()) << " e0=" << execution.engine(0).progressEpoch() << " e1=" << execution.engine(1).progressEpoch();
+    EXPECT_LT(guard, 20000);
+    const auto result = execution.hostAccumulate();
+    ASSERT_EQ(result.size(), 2);
+    EXPECT_FLOAT_EQ(result[0], 2.0F);
+    EXPECT_FLOAT_EQ(result[1], 4.0F);
+    const auto counters = execution.counters();
+    EXPECT_GT(counters.per_bg_barrier_wait_cycles[1], 0);
+    EXPECT_GT(counters.per_bg_completion_cycle[0], 0);
+    EXPECT_GT(counters.per_bg_completion_cycle[1], 0);
+}
+
+TEST(CSCM6SchedulingComparisonTest, ProductionDefaultRemainsBGDecoupled)
+{
+    csc_descriptor::CSCNativeExecution execution;
+    EXPECT_EQ(execution.schedulingPolicy(),
+              csc_descriptor::CSCSchedulingPolicy::BG_DECOUPLED);
+}
