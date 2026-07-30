@@ -155,6 +155,11 @@ struct CSCExecutionCounters : CSCEngineCounters {
     std::array<uint64_t, kCSCGlobalBGCount> per_bg_barrier_wait_cycles{};
     std::array<uint64_t, kCSCGlobalBGCount> per_bg_idle_cycles{};
     std::array<uint64_t, kCSCGlobalBGCount> per_bg_completion_cycle{};
+    CSCSchedulingPolicy scheduling_policy = CSCSchedulingPolicy::BG_DECOUPLED;
+    uint64_t total_cycles = 0, total_barrier_wait_cycles = 0;
+    uint64_t memory_requests_accepted = 0, memory_requests_completed = 0;
+    uint64_t targeted_ops_accepted = 0, targeted_ops_completed = 0;
+    uint64_t partial_results_emitted = 0;
     std::array<uint64_t, 128> per_pimblock_active_cycles{}, per_pimblock_targeted_ops{};
     uint64_t rank_targeted_grants = 0, rank_command_bus_stall_cycles = 0;
     uint64_t rank_resource_conflict_stall_cycles = 0, rank_mode_drain_cycles = 0;

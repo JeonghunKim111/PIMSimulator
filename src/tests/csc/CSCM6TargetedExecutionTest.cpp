@@ -379,3 +379,91 @@ TEST(CSCM6SchedulingComparisonTest, ProductionDefaultRemainsBGDecoupled)
     EXPECT_EQ(execution.schedulingPolicy(),
               csc_descriptor::CSCSchedulingPolicy::BG_DECOUPLED);
 }
+
+namespace
+{
+struct SchedulingRun
+{
+    std::vector<float> result;
+    csc_descriptor::CSCExecutionCounters counters;
+};
+
+SchedulingRun runSchedulingWorkload(const std::array<uint32_t, 4>& chunks,
+                                    csc_descriptor::CSCSchedulingPolicy policy,
+                                    uint64_t bg0_reject_budget = 0)
+{
+    using namespace csc_descriptor;
+    std::array<std::vector<uint8_t>, 64> values, rows;
+    std::array<std::vector<CSCDescriptor>, 64> descriptors;
+    std::array<std::vector<float>, 64> x;
+    std::array<CSCBGImageView, 64> views;
+    uint64_t nnz = 0;
+    for (uint32_t bg = 0; bg < 64; ++bg)
+    {
+        x[bg].push_back(2.0F);
+        if (bg < 4 && chunks[bg])
+        {
+            const uint32_t count = chunks[bg] * 8;
+            values[bg].resize(chunks[bg] * 32);
+            rows[bg].resize(chunks[bg] * 32);
+            for (uint32_t lane = 0; lane < count; ++lane)
+            {
+                const float value = float(bg + 1);
+                const uint32_t row = bg;
+                std::memcpy(values[bg].data() + lane * 4, &value, 4);
+                std::memcpy(rows[bg].data() + lane * 4, &row, 4);
+            }
+            descriptors[bg].push_back({0, 0, count, 0, bg, bg});
+            nnz += count;
+        }
+        views[bg] = {&values[bg], &rows[bg], &descriptors[bg], &x[bg]};
+    }
+    CSCNativeExecution execution(CSCRequestPolicy::OVERLAPPED, policy);
+    execution.setSubmitRejectBudget(0, bg0_reject_budget);
+    execution.launch(views, 4, nnz);
+    uint64_t guard = 0;
+    while (!execution.done() && guard++ < 200000) execution.tick();
+    EXPECT_TRUE(execution.isDone()) << execution.errorMessage();
+    SchedulingRun run;
+    if (execution.isDone()) run.result = execution.hostAccumulate();
+    run.counters = execution.counters();
+    return run;
+}
+}
+
+TEST(CSCM6SchedulingComparisonTest, BalancedLockstepAndDecoupledProduceSameResultAndCounts)
+{
+    using namespace csc_descriptor;
+    const auto decoupled = runSchedulingWorkload({2, 2, 2, 2},
+                                                 CSCSchedulingPolicy::BG_DECOUPLED);
+    const auto lockstep = runSchedulingWorkload(
+        {2, 2, 2, 2}, CSCSchedulingPolicy::BARRIER_LOCKSTEP_REFERENCE);
+    EXPECT_EQ(decoupled.result, lockstep.result);
+    EXPECT_EQ(decoupled.counters.memory_requests_accepted, lockstep.counters.memory_requests_accepted);
+    EXPECT_EQ(decoupled.counters.targeted_ops_accepted, lockstep.counters.targeted_ops_accepted);
+    EXPECT_EQ(decoupled.counters.targeted_ops_completed, lockstep.counters.targeted_ops_completed);
+    EXPECT_EQ(decoupled.counters.partial_results_emitted, lockstep.counters.partial_results_emitted);
+    EXPECT_EQ(decoupled.counters.targeted_ops_accepted, 8);
+}
+
+TEST(CSCM6SchedulingComparisonTest, ImbalancedDecoupledCompletesBeforeLockstep)
+{
+    using namespace csc_descriptor;
+    const auto decoupled = runSchedulingWorkload({1, 4, 1, 0},
+                                                 CSCSchedulingPolicy::BG_DECOUPLED, 80);
+    const auto lockstep = runSchedulingWorkload(
+        {1, 4, 1, 0}, CSCSchedulingPolicy::BARRIER_LOCKSTEP_REFERENCE, 80);
+    EXPECT_EQ(decoupled.result, lockstep.result);
+    EXPECT_LT(decoupled.counters.total_cycles, lockstep.counters.total_cycles);
+    EXPECT_EQ(decoupled.counters.total_barrier_wait_cycles, 0);
+    EXPECT_GT(lockstep.counters.total_barrier_wait_cycles, 0);
+    EXPECT_LT(decoupled.counters.per_bg_completion_cycle[1],
+              lockstep.counters.per_bg_completion_cycle[1]);
+    EXPECT_EQ(decoupled.counters.memory_requests_accepted, lockstep.counters.memory_requests_accepted);
+    EXPECT_EQ(decoupled.counters.targeted_ops_accepted, lockstep.counters.targeted_ops_accepted);
+    EXPECT_EQ(decoupled.counters.rank_targeted_grants, decoupled.counters.targeted_ops_completed);
+    EXPECT_EQ(lockstep.counters.rank_targeted_grants, lockstep.counters.targeted_ops_completed);
+    RecordProperty("decoupled_cycles", decoupled.counters.total_cycles);
+    RecordProperty("lockstep_cycles", lockstep.counters.total_cycles);
+    RecordProperty("barrier_wait_cycles", lockstep.counters.total_barrier_wait_cycles);
+}
