@@ -211,3 +211,71 @@ same-address requests, backpressure, forced out-of-order completion, CPU-referen
 results, normal storage, and `NO_STORAGE=1`. Existing M1-M5, M6-preparation,
 masked-SIMD/SRF, external-image, descriptor, partial-stream, and legacy MUL/ADD
 regressions remain mandatory.
+
+## Barrier-Synchronized Lockstep Reference
+
+`CSCSchedulingPolicy` selects `BG_DECOUPLED` (the production default) or
+`BARRIER_LOCKSTEP_REFERENCE`.  The reference is a scheduling ablation, not an
+exact legacy, all-bank, or commercial HBM-PIM model.  Both policies use the
+same CSC image, descriptor engines, request tracker, MemoryController,
+PIMRank arbitration, physical PIMBlocks, masked MUL latency, and result path.
+
+A barrier epoch is one completed descriptor chunk: it advances after
+`EMIT_PARTIALS` and the successful `ADVANCE_CHUNK` transition.  Active
+participants are busy engines that are neither flushing nor failed.  An
+engine whose epoch is greater than the minimum active epoch is not ticked and
+accumulates `per_bg_barrier_wait_cycles`.  MemorySystem still updates before
+this gate every cycle, so accepted memory requests and physical targeted
+operations continue to drain.  Finished BGs are inactive; flushing and error
+BGs drain outside the barrier.  Consequently they cannot hold the minimum
+epoch and deadlock the remaining participants.
+
+## Scheduling Comparison Methodology
+
+Balanced and imbalanced synthetic images are each executed twice through the
+real native path.  Result vectors, memory request counts, targeted operation
+counts, completions, and partial counts must match.  Measurements come from
+simulator cycles and contention counters, never wall-clock time or a maximum
+of independently calculated BG times.  Reported metrics include total and
+per-BG completion cycles, memory/grant/barrier/idle waits, command/resource
+stalls, PIMBlock activity, accepted/completed request and operation counts,
+and emitted partials.  Empty workloads avoid division; speedup is reported
+only when the decoupled cycle count is nonzero.
+
+## Completion Identity Negative Validation
+
+A friend acceptance accessor can present a candidate completion to the same
+`PIMRank::validateAndRetireBGTargetedCompletion` function used by normal poll.
+The hook does not expose an unrestricted production mutation API.  Validation
+covers operation ID and the full identity (channel, rank, local BG, mask,
+opcode, worker, sequence, generation).  Rejected candidates leave the real
+completion queued.  Only an accepted candidate updates last-retired identity
+and the exactly-once retirement counter, allowing duplicate, unknown, opcode,
+and mask corruption to be tested without duplicating validation logic.
+
+## BG-Local Error Escalation
+
+A known-BG identity mismatch transitions only that BG from `RUNNING` to
+`ERROR_DRAINING`.  Its ungranted slot is cancelled, while accepted memory and
+active/queued targeted completion state drain normally.  It reaches `ERROR`
+only when those resources are empty.  Other BGs remain eligible and can
+complete normally; the rank does not enter `ERROR` for this local fault.
+
+## Rank-Fatal Error Escalation
+
+The shared ownership validator reconstructs the physical busy mask from the
+active-owner table and detects duplicate ownership or mask/owner disagreement.
+A violation enters rank `ERROR_DRAINING`, blocks every new grant, cancels only
+unaccepted slots, preserves accepted operations, and drains their completions.
+The busy mask is normalized to accepted active owners so injected orphan bits
+do not prevent recovery.  After all rank targeted state is empty, the rank
+enters `ERROR`; implicit legacy or targeted re-entry is rejected.
+
+## Final M6 Acceptance
+
+Acceptance requires the core physical path plus scheduling comparison,
+negative identity validation, BG-local isolation, rank-fatal escalation, and
+joint memory/targeted drain tests.  Normal and `NO_STORAGE=1` clean builds must
+produce raw ELF executables with section headers and `main`, and the complete
+specified regression must return process status zero.  Detailed measured
+results are recorded in `docs/csc/M6_ACCEPTANCE_RESULTS.md`.

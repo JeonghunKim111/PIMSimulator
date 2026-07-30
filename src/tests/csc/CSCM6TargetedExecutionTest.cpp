@@ -486,6 +486,11 @@ TEST(CSCM6SchedulingComparisonTest, BalancedLockstepAndDecoupledProduceSameResul
     EXPECT_EQ(decoupled.counters.targeted_ops_completed, lockstep.counters.targeted_ops_completed);
     EXPECT_EQ(decoupled.counters.partial_results_emitted, lockstep.counters.partial_results_emitted);
     EXPECT_EQ(decoupled.counters.targeted_ops_accepted, 8);
+    RecordProperty("balanced_decoupled_cycles", decoupled.counters.total_cycles);
+    RecordProperty("balanced_lockstep_cycles", lockstep.counters.total_cycles);
+    RecordProperty("balanced_memory_requests", decoupled.counters.memory_requests_accepted);
+    RecordProperty("balanced_targeted_ops", decoupled.counters.targeted_ops_accepted);
+    RecordProperty("balanced_barrier_wait", lockstep.counters.total_barrier_wait_cycles);
 }
 
 TEST(CSCM6SchedulingComparisonTest, ImbalancedDecoupledCompletesBeforeLockstep)
@@ -508,6 +513,17 @@ TEST(CSCM6SchedulingComparisonTest, ImbalancedDecoupledCompletesBeforeLockstep)
     RecordProperty("decoupled_cycles", decoupled.counters.total_cycles);
     RecordProperty("lockstep_cycles", lockstep.counters.total_cycles);
     RecordProperty("barrier_wait_cycles", lockstep.counters.total_barrier_wait_cycles);
+    RecordProperty("lockstep_extra_cycles", lockstep.counters.total_cycles - decoupled.counters.total_cycles);
+    RecordProperty("bg0_decoupled_completion", decoupled.counters.per_bg_completion_cycle[0]);
+    RecordProperty("bg1_decoupled_completion", decoupled.counters.per_bg_completion_cycle[1]);
+    RecordProperty("bg0_lockstep_completion", lockstep.counters.per_bg_completion_cycle[0]);
+    RecordProperty("bg1_lockstep_completion", lockstep.counters.per_bg_completion_cycle[1]);
+    RecordProperty("decoupled_command_stalls", decoupled.counters.rank_command_bus_stall_cycles);
+    RecordProperty("lockstep_command_stalls", lockstep.counters.rank_command_bus_stall_cycles);
+    RecordProperty("decoupled_resource_stalls", decoupled.counters.rank_resource_conflict_stall_cycles);
+    RecordProperty("lockstep_resource_stalls", lockstep.counters.rank_resource_conflict_stall_cycles);
+    RecordProperty("pimblock0_active_decoupled", decoupled.counters.per_pimblock_active_cycles[0]);
+    RecordProperty("pimblock0_active_lockstep", lockstep.counters.per_pimblock_active_cycles[0]);
 }
 
 TEST(CSCM6CompletionNegativeTest, DuplicateCompletionIsRejectedExactlyOnce)
