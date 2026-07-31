@@ -1,0 +1,480 @@
+M7B SPARSEPIM-COMPATIBLE COMPLETION
+IMPLEMENTATION SUMMARY AND EXTERNAL TOY RESULTS
+============================================================
+
+Document date: 2026-07-31
+Repository branch: M7-finish
+Verified implementation HEAD:
+  689cbf2 csc: complete SparsePIM-compatible host result path
+
+This document records the implemented M7B architecture and the verified external
+toy-matrix result. It intentionally does not include the later cant_csc
+scalability experiment.
+
+
+1. IMPLEMENTED SYSTEM BOUNDARY
+==============================
+
+The completed production path is:
+
+  CSC descriptor compute
+  -> BG-local associative Bank Group Accumulator (BGA)
+  -> stable BGA output port
+  -> bounded output-destination reserve/accept/commit transfer
+  -> 8-byte architectural partial-result records
+  -> BG-local 32-byte full/tail burst packing
+  -> bounded modeled partial-result writeback
+  -> topology-sized resident burst buffers
+  -> POST_WRITEBACK host readback
+  -> channel-local deterministic read arbitration
+  -> bounded host return queue
+  -> deterministic indexed FP32 host reduction
+  -> authoritative final-y
+  -> endToEndSpMVComplete()
+  -> resultValid()
+  -> finalResult()
+
+The production output mode is:
+
+  CSCBGAOutputConsumerMode::PARTIAL_RESULT_WRITEBACK
+
+EXTERNAL remains an explicit external-consumer mode with no automatic drain.
+VALIDATION_ROUND_ROBIN remains an M7A correctness/oracle mode and is not a
+production result source.
+
+
+2. CHECKPOINT HISTORY
+=====================
+
+M7A baseline:
+  ada9e8a feat: complete native CSC BGA drain lifecycle
+
+M7B-1 and M7B-2:
+  11ecdb7 csc: add bounded partial-result writeback path
+
+M7B-3:
+  ac87038 csc: add bounded host readback path
+
+M7B-4:
+  8e34a44 csc: add deterministic host partial reduction
+
+M7B-5:
+  689cbf2 csc: complete SparsePIM-compatible host result path
+
+
+3. M7B-1: OUTPUT DESTINATION CONTRACT
+=====================================
+
+The BGA and descriptor engine do not know the concrete output destination.
+Ownership transfer follows:
+
+  BGA output peek
+  -> destination capacity reservation
+  -> acceptBGAOutput()
+  -> destination commit
+
+If source acceptance fails, the destination reservation is cancelled. If the
+destination cannot reserve bounded capacity, the BGA front output remains stable
+and is not consumed. Commit/cancel form a no-throw ownership boundary.
+
+This boundary permits a future output consumer, including a future logic-die
+accumulator, without changing the BGA primitive or descriptor producer.
+
+
+4. M7B-2: PARTIAL-RESULT WRITEBACK
+=================================
+
+Architectural physical record:
+
+  uint32_t row_idx
+  float    value
+
+Physical record size is exactly 8 bytes. Simulator-only envelope metadata
+includes global BG, generation, output sequence, contribution count, and BGA
+output reason. Shadow metadata is not counted as transferred bytes.
+
+Each global BG has an independent bounded packer:
+
+  4 records x 8 bytes = one 32-byte full burst
+
+A final packer containing 1-3 records produces one 32-byte tail burst after the
+generic producer/final-drain lifecycle proves no more output can arrive. Padding
+does not create fake records or contributions.
+
+The write path contains bounded pending state, bounded in-flight transactions,
+and bounded resident buffers. Destination buffer space is reserved at write
+issue, so completion cannot fail because the resident buffer became full.
+Rank-local write issue uses deterministic round-robin arbitration.
+
+This is a modeled partial-result writeback timing path. It is not a claim that
+partial results are persisted in a physical DRAM array.
+
+
+5. M7B-3: HOST READBACK
+======================
+
+Readback policy is POST_WRITEBACK:
+
+  all outputs accepted and retired
+  -> all tails flushed
+  -> all writes completed and resident
+  -> partialWritebackComplete()
+  -> host readback begins
+
+Resident ownership follows:
+
+  RESIDENT
+  -> READ_IN_FLIGHT
+  -> read completion
+  -> commit into a pre-reserved host return slot
+  -> resident slot FREE
+
+The resident slot is not released at read issue. Host return capacity is
+reserved at issue, preventing completion-time queue overflow.
+
+Each channel has independent deterministic round-robin arbitration. Simultaneous
+completions use the stable order:
+
+  completion cycle
+  -> channel
+  -> rank
+  -> local BG
+  -> writeback burst sequence
+  -> record index
+
+Read completion at cycle G becomes downstream-visible no earlier than G+1.
+
+
+6. M7B-4: DETERMINISTIC HOST REDUCTION
+======================================
+
+Returned bursts are accepted atomically only when the bounded reduction queue
+has room for every valid record in the burst. A burst is never partially
+transferred.
+
+The reducer preserves the authoritative host-visible ordering. It uses bounded
+queue and operation state and performs indexed arithmetic directly into:
+
+  std::vector<float> final_y_fp32
+
+Each record performs an ordered float addition:
+
+  final_y_fp32[row] =
+      static_cast<float>(final_y_fp32[row] + record.value);
+
+There is no double accumulator followed by a final float cast. Cross-BG records
+for the same row and repeated physical records from one BG are both accumulated
+in arrival order.
+
+hostReadbackComplete() means all returned payload has reached the reduction
+path. hostReductionComplete() additionally requires the reduction queue and
+in-flight arithmetic to drain with record/contribution conservation satisfied.
+
+
+7. M7B-5: PRODUCTION COMPLETION AND RESULT
+==========================================
+
+The authoritative production result is the host-reduced FP32 state. It is not
+the M7A validation collector, a double semantic shadow, a BGA-local value, or a
+CPU reference calculation.
+
+For PARTIAL_RESULT_WRITEBACK mode, endToEndSpMVComplete() requires:
+
+  bgaComputeSubmitComplete()
+  AND bgaDrainComplete()
+  AND partialWritebackComplete()
+  AND hostReadbackComplete()
+  AND hostReductionComplete()
+  AND result-state/conservation validation
+  AND no sticky error
+
+isDone() uses this end-to-end predicate in production mode. resultValid() becomes
+true only after the same production completion. finalResult() rejects access
+before validity and then returns the authoritative host-reduced FP32 result.
+
+The complete conservation chain distinguishes physical output records from
+contributions:
+
+  physical BGA records
+  = packed records
+  = readback records
+  = reduced records
+
+  accepted contributions
+  = BGA output contribution sum
+  = writeback contribution sum
+  = readback contribution sum
+  = reduced contribution sum
+  = matrix NNZ for a normal workload
+
+
+8. BOUNDEDNESS AND BACKPRESSURE
+===============================
+
+The following resources are explicitly bounded:
+
+  - output destination reservations
+  - per-BG record packers
+  - pending write bursts
+  - write transactions in flight
+  - per-BG resident burst buffers
+  - read transactions in flight
+  - host return burst queue
+  - reduction record queue
+  - reduction operation state
+
+Pressure propagates upstream without an unbounded overflow vector:
+
+  reduction pressure
+  -> returned-burst consumption stalls
+  -> host return reservations fill
+  -> read issue stalls
+
+and:
+
+  resident/write pressure
+  -> packer reservation fails
+  -> BGA output acceptance stalls
+  -> stable BGA front output is retained
+
+
+9. ERROR BEHAVIOR
+=================
+
+Invalid row/BG/generation/sequence, duplicate identities, reservation
+mismatches, duplicate reads/reductions, malformed bursts, and conservation
+failures enter a sticky error state. An error prevents end-to-end completion and
+result validity. There is no validation-result or legacy-host fallback.
+
+
+10. EXTERNAL TOY INPUT
+======================
+
+Matrix source:
+  /home/gs13022/SparsePIM/csc_light_preprocess/testdata/toy_csc.txt
+
+Image configuration:
+  layout: csc_aligned
+  policy: round_robin
+  segment-nnz: 0
+  warmup: 0
+  repeat: 1
+
+Matrix/runtime metadata:
+  rows: 6
+  columns: 6
+  NNZ: 9
+  descriptors: 5
+  global BG count: 64
+  active BG count: 5
+  descriptors per active BG min/max/average: 1 / 1 / 1.000
+  NNZ per active BG min/max/average: 1 / 3 / 1.800
+
+Active BG input distribution:
+  BG 0: 2 NNZ, 1 descriptor
+  BG 1: 1 NNZ, 1 descriptor
+  BG 3: 1 NNZ, 1 descriptor
+  BG 4: 2 NNZ, 1 descriptor
+  BG 5: 3 NNZ, 1 descriptor
+
+
+11. TOY COMPUTE AND BGA RESULT
+==============================
+
+  execution_start_cycle: 0
+  compute_submit_complete_cycle: 80
+  bga_drain_complete_cycle: 83
+
+  accepted contributions: 9
+  physical BGA output records: 9
+  BGA output contribution sum: 9
+  capacity eviction outputs: 0
+  final-drain outputs: 9
+  BGA backpressure cycles: 0
+
+
+12. TOY PARTIAL WRITEBACK RESULT
+================================
+
+  first BGA output accept: cycle 70
+  first write issue: cycle 73
+  first write completion: cycle 75
+  last write issue: cycle 84
+  last write completion: cycle 86
+  partialWritebackComplete: cycle 86
+
+  partial records generated: 9
+  full bursts: 0
+  tail bursts: 5
+  total bursts: 5
+  write requests issued/completed: 5 / 5
+  peak in-flight writes: 2
+
+  useful bytes: 72
+  transferred bytes: 160
+  padding bytes: 88
+
+  packer backpressure cycles: 0
+  buffer backpressure cycles: 0
+  in-flight backpressure cycles: 0
+
+
+13. TOY HOST READBACK RESULT
+============================
+
+  host readback start: cycle 86
+  first read issue: cycle 87
+  first read completion: cycle 90
+  last read issue: cycle 97
+  last read completion: cycle 100
+  hostReadbackComplete: cycle 101
+
+  read requests issued/completed: 5 / 5
+  returned bursts committed/delivered: 5 / 5
+  peak in-flight reads: 2
+  peak host return queue occupancy: 2
+  return-queue backpressure cycles: 193
+
+  useful bytes: 72
+  transferred bytes: 160
+  padding bytes: 88
+
+
+14. TOY HOST REDUCTION RESULT
+=============================
+
+  first reduction issue: cycle 92
+  first FP32 reduction commit: cycle 94
+  last FP32 reduction commit: cycle 110
+  hostReductionComplete: cycle 110
+
+  reduced physical records: 9
+  reduced contributions: 9
+  FP32 host adds: 9
+  cross-BG same-row merges: 3
+  same-BG repeated-record merges: 0
+  peak reduction queue occupancy: 4
+  reduction queue backpressure cycles: 2
+
+
+15. TOY END-TO-END RESULT
+=========================
+
+  end_to_end_complete_cycle: 111
+  result_valid_cycle: 111
+
+  T_compute_submit: 80
+  T_bga_drain: 83
+  T_writeback: 16
+  T_readback: 15
+  T_host_reduce: 19
+  T_end_to_end: 111
+
+T_end_to_end is end_to_end_complete_cycle minus execution_start_cycle. It is not
+computed by summing phase durations.
+
+
+16. TOY CONSERVATION RESULT
+===========================
+
+Contribution chain:
+  manifest NNZ: 9
+  engine accepted contributions: 9
+  BGA output contributions: 9
+  writeback contributions: 9
+  readback contributions: 9
+  reduced contributions: 9
+  result: PASS
+
+Physical record chain:
+  BGA output records: 9
+  packed records: 9
+  readback records: 9
+  reduced records: 9
+  result: PASS
+
+Byte chain:
+  write useful/transferred/padding: 72 / 160 / 88
+  read useful/transferred/padding: 72 / 160 / 88
+  result: PASS
+
+
+17. TOY FINAL-Y RESULT
+======================
+
+  row  CPU FP32 reference  M7B final result  absolute error  bit exact
+    0  6.857143402         6.857143402      0.000000000     PASS
+    1  4.285714149         4.285714149      0.000000000     PASS
+    2  0.285714298         0.285714298      0.000000000     PASS
+    3  6.000000000         6.000000000      0.000000000     PASS
+    4  6.857142925         6.857142925      0.000000000     PASS
+    5  7.714285851         7.714285851      0.000000000     PASS
+
+  maximum absolute error: 0.0
+  all rows bit exact: PASS
+  CPU reference comparison: PASS
+  endToEndSpMVComplete(): true
+  resultValid(): true
+  GoogleTest result: PASS
+
+
+18. TOY TIMELINE
+================
+
+  cycle   0: execution start
+  cycle  70: first BGA output and writeback-consumer acceptance
+  cycle  73: first write issue
+  cycle  80: compute submission complete
+  cycle  83: BGA drain complete
+  cycle  86: last write completion / partial writeback complete
+  cycle  87: first host read issue
+  cycle  94: first FP32 reduction commit
+  cycle 100: last host read completion
+  cycle 101: host readback complete
+  cycle 110: last FP32 reduction / host reduction complete
+  cycle 111: end-to-end completion and resultValid
+
+
+19. VERIFIED REGRESSION SCOPE
+=============================
+
+The M7B implementation was accepted with targeted coverage for:
+
+  - destination modes and reserve/accept/commit ownership
+  - full and tail burst packing
+  - write capacity, in-flight, and resident-buffer pressure
+  - deterministic rank-local write arbitration
+  - POST_WRITEBACK gating
+  - channel-local deterministic host read arbitration
+  - bounded return-queue reservations and pressure
+  - deterministic simultaneous read completion ordering
+  - bounded reduction-queue ownership
+  - FP32 order-sensitive reduction
+  - cross-BG and same-BG repeated-row merges
+  - empty and sticky-error cases
+  - exact-cycle and repeat determinism
+  - M7A, M6, complete CSC, legacy MUL/ADD, and Scheme8 compatibility
+  - normal and NO_STORAGE builds
+
+
+20. SCOPE AND KNOWN LIMITATIONS
+===============================
+
+"SparsePIM-compatible completion" here means that BGA partial results cross an
+explicit modeled writeback/readback boundary and are globally reduced by an
+indexed deterministic host FP32 model to produce final y.
+
+This implementation does not claim:
+
+  - a logic-die Global Accumulator
+  - TSV/internal-bus timing
+  - physical DRAM-array partial-result persistence
+  - CPU instruction-level timing
+  - the complete SparsePIM microarchitecture
+  - SparsePIM+ completion
+  - STREAMING_READBACK
+
+The current policy is POST_WRITEBACK. All result bursts must fit in the finite
+resident buffers before host readback begins. Future matrix measurements should
+therefore start with a matrix substantially smaller than cant_csc and perform a
+resident-capacity preflight before execution.
