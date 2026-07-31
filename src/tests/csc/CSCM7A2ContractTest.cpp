@@ -94,6 +94,9 @@ TEST(CSCM7A2ContractTest, CallbackPortCompilesAgainstStandalonePrimitive)
         EXPECT_EQ(identity.logical_stream_id, kCSCM7ALogicalStream);
         bga.markProducerDone(identity.logical_stream_id);
     };
+    producer.request_final_drain = [&](const CSCBGAProducerIdentity&) {
+        return bga.requestFinalDrain();
+    };
     output.has_output = [&](uint32_t) { return bga.hasOutput(); };
     output.peek_output =
         [&](uint32_t) -> const CSCBGAOutput& { return bga.peekOutput(); };
@@ -110,7 +113,9 @@ TEST(CSCM7A2ContractTest, CallbackPortCompilesAgainstStandalonePrimitive)
     producer.producer_done({batch.global_bg_id,
                              batch.payload.logical_stream_id,
                              batch.payload.generation});
-    EXPECT_TRUE(bga.requestFinalDrain());
+    EXPECT_TRUE(producer.request_final_drain({batch.global_bg_id,
+                                                batch.payload.logical_stream_id,
+                                                batch.payload.generation}));
 }
 
 

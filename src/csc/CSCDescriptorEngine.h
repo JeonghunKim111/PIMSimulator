@@ -26,7 +26,8 @@ struct CSCM6CompletionTestAccess;
 
 enum class CSCDescriptorState {
     IDLE, FETCH_DESCRIPTOR, LOAD_X, FETCH_VALUE, FETCH_ROW_INDEX, WAIT_OPERANDS,
-    SIMD_MUL, WAIT_TARGET_GRANT, WAIT_TARGET_COMPLETION, EMIT_PARTIALS, ADVANCE_CHUNK, NEXT_DESCRIPTOR, DONE, ERROR, FLUSHING
+    SIMD_MUL, WAIT_TARGET_GRANT, WAIT_TARGET_COMPLETION, EMIT_PARTIALS,
+    ADVANCE_CHUNK, NEXT_DESCRIPTOR, COMPLETE_PRODUCER, DONE, ERROR, FLUSHING
 };
 enum class CSCRequestPolicy { SERIALIZED, OVERLAPPED };
 enum class CSCSchedulingPolicy { BG_DECOUPLED, BARRIER_LOCKSTEP_REFERENCE };
@@ -55,6 +56,9 @@ struct CSCEngineCounters {
     uint64_t accepted_bga_batches = 0, accepted_bga_partials = 0;
     uint64_t bga_backpressure_cycles = 0, bga_duplicate_errors = 0;
     uint64_t bga_protocol_errors = 0;
+    uint64_t bga_producer_done_calls = 0;
+    uint64_t bga_final_drain_requests = 0;
+    uint64_t empty_bg_producer_completions = 0;
 };
 
 class CSCDescriptorEngine {
@@ -71,7 +75,8 @@ class CSCDescriptorEngine {
     CSCDescriptorEngine(uint32_t, DRAMSim::PIMBlock*, TokenSubmit, TokenFactory, Address);
     CSCDescriptorEngine(uint32_t, TokenSubmit, TokenFactory, Address, TargetSubmit, TargetStatus,
                         TargetPoll);
-    void launch(const CSCBGImageView&, std::vector<CSCPartial>*);
+    void launch(const CSCBGImageView&, std::vector<CSCPartial>*,
+                uint32_t bga_generation = 0);
     void tick();
     void flush();
     void flushIncomplete();
@@ -113,6 +118,11 @@ class CSCDescriptorEngine {
     uint64_t lastTargetPollEngineCycle() const { return last_target_poll_engine_cycle_; }
     uint64_t lastBGAMaterializeEngineCycle() const { return last_bga_materialize_engine_cycle_; }
     uint64_t lastBGAAcceptEngineCycle() const { return last_bga_accept_engine_cycle_; }
+    bool producerDoneSent() const { return producer_done_sent_; }
+    bool finalDrainRequested() const { return final_drain_requested_; }
+    bool computeSubmitDone() const { return compute_submit_done_; }
+    uint64_t producerDoneEngineCycle() const { return producer_done_engine_cycle_; }
+    uint64_t finalDrainRequestEngineCycle() const { return final_drain_request_engine_cycle_; }
 
   private:
     friend struct CSCFreezeTestAccess;
@@ -130,6 +140,7 @@ class CSCDescriptorEngine {
     void validateLaunch() const;
     bool descriptorValid(const CSCDescriptor&) const;
     void finishWork();
+    void completeProducer();
     OperandSlot* slotFor(CSCRequestKind);
 
     uint32_t global_bg_id_, descriptor_pointer_ = 0, remaining_nnz_ = 0, chunk_offset_ = 0;
@@ -137,10 +148,11 @@ class CSCDescriptorEngine {
     uint64_t local_sequence_ = 0, maximum_outstanding_ = 0;
     uint64_t progress_epoch_ = 0;
     uint64_t next_bga_sequence_ = 1, descriptor_chunk_ordinal_ = 1;
-    uint32_t completed_target_generation_ = 0;
+    uint32_t completed_target_generation_ = 0, bga_generation_ = 0;
     uint64_t last_target_grant_cycle_ = 0, last_target_completion_cycle_ = 0;
     uint64_t last_target_poll_engine_cycle_ = 0;
     uint64_t last_bga_materialize_engine_cycle_ = 0, last_bga_accept_engine_cycle_ = 0;
+    uint64_t producer_done_engine_cycle_ = 0, final_drain_request_engine_cycle_ = 0;
     CSCDescriptor current_{};
     float x_j_ = 0;
     std::array<uint8_t, 32> value_staging_{}, index_staging_{};
@@ -163,6 +175,8 @@ class CSCDescriptorEngine {
     CSCDescriptorState state_ = CSCDescriptorState::IDLE;
     bool busy_ = false, done_ = false, flush_requested_ = false, flush_completed_ = false;
     bool incomplete_flush_requested_ = false;
+    bool producer_done_sent_ = false, final_drain_requested_ = false;
+    bool compute_submit_done_ = false, empty_bg_ = false;
     CSCError error_code_ = CSCError::NONE;
     std::string error_;
     CSCEngineCounters counters_;
@@ -197,6 +211,16 @@ struct CSCExecutionCounters : CSCEngineCounters {
     uint64_t memory_requests_accepted = 0, memory_requests_completed = 0;
     uint64_t targeted_ops_accepted = 0, targeted_ops_completed = 0;
     uint64_t partial_results_emitted = 0;
+    uint64_t bga_outputs_peeked = 0, bga_outputs_accepted = 0;
+    uint64_t bga_capacity_outputs_accepted = 0;
+    uint64_t bga_final_drain_outputs_accepted = 0;
+    uint64_t bga_output_contributions_accepted = 0;
+    uint64_t bga_output_accept_errors = 0;
+    uint64_t validation_output_drain_cycles = 0;
+    uint64_t external_consumer_wait_cycles = 0;
+    uint64_t compute_submit_complete_cycle = 0;
+    uint64_t first_bga_output_cycle = 0, last_bga_output_accept_cycle = 0;
+    uint64_t bga_execution_complete_cycle = 0;
     std::array<uint64_t, 128> per_pimblock_active_cycles{}, per_pimblock_targeted_ops{};
     uint64_t rank_targeted_grants = 0, rank_command_bus_stall_cycles = 0;
     uint64_t rank_resource_conflict_stall_cycles = 0, rank_mode_drain_cycles = 0;
@@ -236,9 +260,19 @@ class CSCNativeExecution {
     CSCResultStatus bgResultStatus(uint32_t bg) const { return result_status_.at(bg); }
     bool resultValid() const;
     bool productionBGAEnabled() const { return production_bga_enabled_; }
-    bool bgaComputeSubmitComplete() const { return bga_config_.enabled && isDone(); }
-    bool bgaOutputCompletionImplemented() const { return false; }
+    bool bgaComputeSubmitComplete() const;
+    bool bgaDrainComplete() const;
+    bool bgaExecutionComplete() const;
+    CSCBGAExecutionState bgaExecutionState() const;
+    bool bgaOutputCompletionImplemented() const { return bga_config_.enabled; }
     const CSCBankGroupAccumulator& bankGroupAccumulator(uint32_t global_bg) const;
+    bool hasBGAOutput(uint32_t global_bg) const;
+    CSCBGAOutputPortValue peekBGAOutput(uint32_t global_bg) const;
+    void acceptBGAOutput(uint32_t global_bg);
+    const CSCBGAValidationCollector& bgaValidationCollector() const {
+        return bga_validation_collector_;
+    }
+    bool bgaValidationSemanticMatches(double tolerance = 1e-5) const;
     bool hasOutstandingRequest() const { return !outstanding_.empty(); }
     bool hasPendingTransactions() const;
     bool hasUnconsumedCompletion() const;
@@ -267,6 +301,10 @@ class CSCNativeExecution {
     bool submitTarget(CSCDescriptorEngine*, const DRAMSim::BGTargetedOperation&);
     DRAMSim::BGTargetedOperationState targetStatus(const DRAMSim::BGTargetedIdentity&) const;
     bool pollTarget(const DRAMSim::BGTargetedIdentity&, DRAMSim::BGTargetedCompletion&);
+    CSCBGAInputResult submitBGA(const CSCBGAPartialBatch&);
+    bool requestBGAFinalDrain(const CSCBGAProducerIdentity&);
+    void serviceValidationBGAOutputs();
+    void commitAcceptedBGAOutput(uint32_t, const CSCBGAOutput&);
     void latchFailure(const CSCDescriptorEngine&);
     void updateMLP();
     DRAMSim::PIMRank& targetRank(uint32_t);
@@ -291,6 +329,8 @@ class CSCNativeExecution {
     std::array<CSCResultStatus, 64> result_status_{};
     CSCBGAIntegrationConfig bga_config_{};
     CSCBGAOutputPortCallbacks bga_output_callbacks_{};
+    CSCBGAValidationCollector bga_validation_collector_{};
+    uint32_t validation_round_robin_cursor_ = 0;
     bool bga_configuration_locked_ = false;
     bool production_bga_enabled_ = false;
 };

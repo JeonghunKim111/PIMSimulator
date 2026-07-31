@@ -38,6 +38,7 @@ CSCBGAIntegrationConfig config(uint32_t rows, uint32_t entries = 16,
     c.accumulator.compare_width = entries;
     c.accumulator.input_queue_depth = input_depth;
     c.accumulator.output_queue_depth = output_depth;
+    c.output_consumer_mode = CSCBGAOutputConsumerMode::VALIDATION_ROUND_ROBIN;
     return c;
 }
 uint32_t bits(float value) {
@@ -193,7 +194,7 @@ TEST(CSCM7A2CycleHandshakeTest, FullTailAndDescriptorBoundaryMaterialization) {
     EXPECT_TRUE(execution.partials().empty());
     EXPECT_FALSE(execution.resultValid());
     EXPECT_TRUE(execution.bgaComputeSubmitComplete());
-    EXPECT_FALSE(execution.bgaOutputCompletionImplemented());
+    EXPECT_TRUE(execution.bgaOutputCompletionImplemented());
     EXPECT_THROW(execution.hostAccumulate(), std::logic_error);
     EXPECT_TRUE(execution.bankGroupAccumulator(0).conservationInvariant());
 }
@@ -213,9 +214,10 @@ TEST(CSCM7A2CycleHandshakeTest, BackpressureRetriesOneStableBatch) {
         return CSCBGAInputResult::ACCEPTED;
     };
     producer.producer_done = [](const CSCBGAProducerIdentity&) {};
+    producer.request_final_drain = [](const CSCBGAProducerIdentity&) { return true; };
     execution.configureBGAIntegration(c, producer, unusedOutput());
     execution.launch(views.views, 2, 2);
-    runUntil(execution, [&] { return execution.done(); });
+    runUntil(execution, [&] { return execution.engine(0).computeSubmitDone(); });
     ASSERT_EQ(observed.size(), 5U);
     for (const auto& retry : observed) {
         EXPECT_EQ(retry.global_bg_id, observed[0].global_bg_id);
@@ -248,6 +250,7 @@ TEST(CSCM7A2CycleHandshakeTest, DuplicateAndProtocolResponsesBecomeEngineErrors)
         CSCBGAProducerCallbacks producer;
         producer.submit = [=](const CSCBGAPartialBatch&) { return response; };
         producer.producer_done = [](const CSCBGAProducerIdentity&) {};
+        producer.request_final_drain = [](const CSCBGAProducerIdentity&) { return true; };
         execution.configureBGAIntegration(config(1), producer, unusedOutput());
         execution.launch(views.views, 1, 1);
         runUntil(execution, [&] { return execution.done(); });
@@ -278,7 +281,9 @@ TEST(CSCM7A2CycleHandshakeTest, ProductionBackpressureIsBGLocal) {
                               mapping);
     Views views(layout, std::vector<float>(9, 1.0F));
     CSCNativeExecution execution;
-    execution.enableProductionBGAIntegration(config(16, 1, 1, 1));
+    auto pressure_config = config(16, 1, 1, 1);
+    pressure_config.output_consumer_mode = CSCBGAOutputConsumerMode::EXTERNAL;
+    execution.enableProductionBGAIntegration(pressure_config);
     execution.launch(views.views, 16, entries.size());
     runUntil(execution, [&] {
         return execution.engine(0).counters().bga_backpressure_cycles >= 3;
