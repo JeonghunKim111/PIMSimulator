@@ -43,7 +43,8 @@ struct CSCBGAPartialBatch {
     CSCBGABatch payload{};
 
     void validate(const CSCBGAIntegrationConfig& config,
-                  uint64_t next_bga_sequence) const
+                  uint64_t next_bga_sequence,
+                  uint64_t last_accepted_sequence = 0) const
     {
         config.validate();
         if (!config.enabled)
@@ -54,10 +55,11 @@ struct CSCBGAPartialBatch {
             payload.logical_stream_id != kCSCM7ALogicalStream)
             throw std::invalid_argument("invalid M7A logical stream");
         if (!payload.generation || !payload.sequence || !next_bga_sequence ||
-            payload.sequence != next_bga_sequence)
+            (payload.sequence != next_bga_sequence &&
+             payload.sequence != last_accepted_sequence))
             throw std::invalid_argument("invalid M7A BGA exactly-once identity");
         if (!descriptor_chunk_ordinal ||
-            descriptor_chunk_ordinal != next_bga_sequence)
+            descriptor_chunk_ordinal != payload.sequence)
             throw std::invalid_argument("descriptor/chunk ordinal mismatch");
         if (!valid_count || valid_count > 8 ||
             payload.partials.size() != valid_count)

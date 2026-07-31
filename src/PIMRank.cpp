@@ -12,6 +12,8 @@
 
 #include "PIMRank.h"
 
+#include <exception>
+#include <limits>
 #include <stdexcept>
 
 #include <bitset>
@@ -62,6 +64,186 @@ void PIMRank::validateTargetedTopology()
             bg_to_pimblocks_[bg][in_pair] = block;
         }
     }
+}
+
+
+uint32_t PIMRank::computeCSCGlobalBG(uint32_t channel_id, uint32_t rank_id,
+                                     uint32_t num_channels, uint32_t num_ranks,
+                                     uint32_t local_bgs_per_rank,
+                                     uint32_t local_bg_id)
+{
+    if (!num_channels || !num_ranks || !local_bgs_per_rank)
+        throw std::invalid_argument("zero CSC BGA topology dimension");
+    if (channel_id >= num_channels || rank_id >= num_ranks ||
+        local_bg_id >= local_bgs_per_rank)
+        throw std::out_of_range("CSC BGA topology coordinate");
+    const uint64_t total = uint64_t(num_channels) * num_ranks * local_bgs_per_rank;
+    const uint64_t global =
+        (uint64_t(channel_id) * num_ranks + rank_id) * local_bgs_per_rank +
+        local_bg_id;
+    if (total > csc_descriptor::kCSCGlobalBGs ||
+        global >= csc_descriptor::kCSCGlobalBGs)
+        throw std::out_of_range("CSC global BG topology exceeds image contract");
+    return uint32_t(global);
+}
+
+void PIMRank::configureCSCBGAs(
+    const csc_descriptor::CSCBGAIntegrationConfig& requested,
+    uint32_t generation)
+{
+    requested.validate();
+    if (!requested.enabled)
+    {
+        if (csc_bga_enabled_)
+            for (const auto& bga : csc_bgas_)
+                if (bga && !bga->quiescent())
+                    throw std::logic_error("disable live CSC BGA ownership");
+        for (auto& bga : csc_bgas_) bga.reset();
+        csc_bga_enabled_ = false;
+        csc_bga_config_ = requested;
+        return;
+    }
+    if (!generation) throw std::invalid_argument("zero CSC BGA generation");
+    if (chanId < 0 || rankId < 0)
+        throw std::logic_error("CSC BGA topology identity is unset");
+    if (csc_bga_enabled_)
+        for (const auto& bga : csc_bgas_)
+            if (bga && !bga->quiescent())
+                throw std::logic_error("reconfigure live CSC BGA ownership");
+
+    const uint32_t channels = getConfigParam(UINT, "NUM_CHANS");
+    const uint32_t ranks = getConfigParam(UINT, "NUM_RANKS");
+    const uint32_t local_bgs = getConfigParam(UINT, "NUM_BANK_GROUPS");
+    if (!local_bgs || local_bgs != kBGsPerRank)
+        throw std::invalid_argument("CSC BGA local-BG topology mismatch");
+
+    std::array<uint32_t, kBGsPerRank> ids{};
+    std::array<std::unique_ptr<csc_descriptor::CSCBankGroupAccumulator>,
+               kBGsPerRank> candidate{};
+    for (uint32_t local = 0; local < kBGsPerRank; ++local)
+    {
+        ids[local] = computeCSCGlobalBG(uint32_t(chanId), uint32_t(rankId),
+                                        channels, ranks, local_bgs, local);
+        candidate[local].reset(new csc_descriptor::CSCBankGroupAccumulator(
+            requested.accumulator, generation));
+    }
+    csc_bgas_ = std::move(candidate);
+    csc_bga_global_ids_ = ids;
+    csc_bga_config_ = requested;
+    csc_bga_enabled_ = true;
+}
+
+bool PIMRank::hasCSCBGA(uint32_t local_bg) const
+{
+    if (local_bg >= kBGsPerRank) throw std::out_of_range("local CSC BGA");
+    return csc_bga_enabled_ && bool(csc_bgas_[local_bg]);
+}
+
+uint32_t PIMRank::cscGlobalBG(uint32_t local_bg) const
+{
+    if (!hasCSCBGA(local_bg)) throw std::logic_error("CSC BGA disabled");
+    return csc_bga_global_ids_[local_bg];
+}
+
+uint32_t PIMRank::cscLocalBG(uint32_t global_bg) const
+{
+    if (global_bg >= csc_descriptor::kCSCGlobalBGs)
+        throw std::out_of_range("global CSC BGA");
+    if (!csc_bga_enabled_) throw std::logic_error("CSC BGA disabled");
+    for (uint32_t local = 0; local < kBGsPerRank; ++local)
+        if (csc_bga_global_ids_[local] == global_bg) return local;
+    throw std::invalid_argument("global CSC BG owned by another PIMRank");
+}
+
+const csc_descriptor::CSCBankGroupAccumulator& PIMRank::cscBGA(
+    uint32_t local_bg) const
+{
+    if (!hasCSCBGA(local_bg)) throw std::logic_error("CSC BGA disabled");
+    return *csc_bgas_[local_bg];
+}
+
+csc_descriptor::CSCBGAInputResult PIMRank::submitCSCBGAPartialBatch(
+    const csc_descriptor::CSCBGAPartialBatch& batch)
+{
+    const uint32_t local = cscLocalBG(batch.global_bg_id);
+    auto& bga = *csc_bgas_[local];
+    const uint64_t last = bga.lastAcceptedSequence(0);
+    const uint64_t next =
+        last == std::numeric_limits<uint64_t>::max() ? last : last + 1;
+    batch.validate(csc_bga_config_, next, last);
+    if (batch.payload.generation != bga.generation())
+        throw std::invalid_argument("CSC BGA batch generation mismatch");
+    return bga.offerBatch(batch.payload);
+}
+
+void PIMRank::markCSCBGAProducerDone(
+    const csc_descriptor::CSCBGAProducerIdentity& identity)
+{
+    const uint32_t local = cscLocalBG(identity.global_bg_id);
+    auto& bga = *csc_bgas_[local];
+    if (identity.logical_stream_id != csc_descriptor::kCSCM7ALogicalStream ||
+        identity.generation != bga.generation())
+        throw std::invalid_argument("CSC BGA producer identity mismatch");
+    bga.markProducerDone(identity.logical_stream_id);
+}
+
+bool PIMRank::requestCSCBGAFinalDrain(uint32_t global_bg)
+{
+    return csc_bgas_[cscLocalBG(global_bg)]->requestFinalDrain();
+}
+
+bool PIMRank::hasCSCBGAOutput(uint32_t global_bg) const
+{
+    return csc_bgas_[cscLocalBG(global_bg)]->hasOutput();
+}
+
+csc_descriptor::CSCBGAOutputPortValue PIMRank::peekCSCBGAOutput(
+    uint32_t global_bg) const
+{
+    const uint32_t local = cscLocalBG(global_bg);
+    return {global_bg, csc_bgas_[local]->peekOutput()};
+}
+
+void PIMRank::acceptCSCBGAOutput(uint32_t global_bg)
+{
+    csc_bgas_[cscLocalBG(global_bg)]->acceptOutput();
+}
+
+void PIMRank::stepCSCBGAs()
+{
+    if (!csc_bga_enabled_) return;
+    std::exception_ptr first;
+    for (uint32_t local = 0; local < kBGsPerRank; ++local)
+        try
+        {
+            csc_bgas_[local]->step();
+        }
+        catch (...)
+        {
+            if (!first) first = std::current_exception();
+        }
+    if (first) std::rethrow_exception(first);
+}
+
+uint32_t PIMRank::cscBGAGeneration(uint32_t local_bg) const
+{
+    return cscBGA(local_bg).generation();
+}
+
+bool PIMRank::cscBGAQuiescent(uint32_t local_bg) const
+{
+    return cscBGA(local_bg).quiescent();
+}
+
+bool PIMRank::cscBGAFinalDrainComplete(uint32_t local_bg) const
+{
+    return cscBGA(local_bg).finalDrainComplete();
+}
+
+const csc_descriptor::CSCBGACounters& PIMRank::cscBGACounters(
+    uint32_t local_bg) const
+{
+    return cscBGA(local_bg).counters();
 }
 
 void PIMRank::validateTargetedOperation(const BGTargetedOperation& operation) const

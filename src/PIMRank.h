@@ -13,6 +13,7 @@
 #ifndef _PIMRANK_H_
 #define _PIMRANK_H_
 
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -24,6 +25,7 @@
 #include "PIMCmd.h"
 #include "Rank.h"
 #include "SimulatorObject.h"
+#include "csc/CSCBGAIntegration.h"
 
 using namespace std;
 using namespace DRAMSim;
@@ -84,6 +86,11 @@ class PIMRank : public SimulatorObject
     std::array<std::optional<BGTargetedIdentity>, kBGsPerRank> bg_last_retired_{};
     uint32_t next_bg_rr_ = 0;
     uint8_t pimblock_busy_mask_ = 0;
+    std::array<std::unique_ptr<csc_descriptor::CSCBankGroupAccumulator>,
+               kBGsPerRank> csc_bgas_{};
+    std::array<uint32_t, kBGsPerRank> csc_bga_global_ids_{};
+    csc_descriptor::CSCBGAIntegrationConfig csc_bga_config_{};
+    bool csc_bga_enabled_ = false;
 
   public:
     struct TargetedStatistics
@@ -155,6 +162,35 @@ class PIMRank : public SimulatorObject
     bool bgHasPendingOperation(uint32_t local_bg) const;
     const BGTargetedOperation& bgPendingOperation(uint32_t local_bg) const;
     const std::array<uint32_t, kPIMBlocksPerBG>& physicalPIMBlockPair(uint32_t local_bg) const;
+
+    void configureCSCBGAs(const csc_descriptor::CSCBGAIntegrationConfig&,
+                          uint32_t generation);
+    bool cscBGAEnabled() const { return csc_bga_enabled_; }
+    bool hasCSCBGA(uint32_t local_bg) const;
+    static uint32_t computeCSCGlobalBG(uint32_t channel_id, uint32_t rank_id,
+                                       uint32_t num_channels, uint32_t num_ranks,
+                                       uint32_t local_bgs_per_rank,
+                                       uint32_t local_bg_id);
+    uint32_t cscGlobalBG(uint32_t local_bg) const;
+    uint32_t cscLocalBG(uint32_t global_bg) const;
+    csc_descriptor::CSCBGAInputResult submitCSCBGAPartialBatch(
+        const csc_descriptor::CSCBGAPartialBatch&);
+    void markCSCBGAProducerDone(
+        const csc_descriptor::CSCBGAProducerIdentity&);
+    bool requestCSCBGAFinalDrain(uint32_t global_bg);
+    bool hasCSCBGAOutput(uint32_t global_bg) const;
+    csc_descriptor::CSCBGAOutputPortValue peekCSCBGAOutput(
+        uint32_t global_bg) const;
+    void acceptCSCBGAOutput(uint32_t global_bg);
+    void stepCSCBGAs();
+    uint32_t cscBGAGeneration(uint32_t local_bg) const;
+    bool cscBGAQuiescent(uint32_t local_bg) const;
+    bool cscBGAFinalDrainComplete(uint32_t local_bg) const;
+    const csc_descriptor::CSCBGACounters& cscBGACounters(
+        uint32_t local_bg) const;
+    // Valid until the next successful configureCSCBGAs(); never owning/mutable.
+    const csc_descriptor::CSCBankGroupAccumulator& cscBGA(
+        uint32_t local_bg) const;
 
     union crf_t
     {
