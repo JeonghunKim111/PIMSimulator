@@ -11,6 +11,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -50,6 +51,10 @@ struct CSCEngineCounters {
     uint64_t generated_partials = 0, emitted_partials = 0, host_accumulations = 0;
     uint64_t stall_cycles_request = 0, stall_cycles_backpressure = 0, busy_cycles = 0;
     uint64_t total_execution_cycles = 0;
+    uint64_t generated_bga_batches = 0, generated_bga_partials = 0;
+    uint64_t accepted_bga_batches = 0, accepted_bga_partials = 0;
+    uint64_t bga_backpressure_cycles = 0, bga_duplicate_errors = 0;
+    uint64_t bga_protocol_errors = 0;
 };
 
 class CSCDescriptorEngine {
@@ -97,6 +102,17 @@ class CSCDescriptorEngine {
         return bga_config_;
     }
     uint64_t nextBGASequence() const { return next_bga_sequence_; }
+    const std::optional<CSCBGAPartialBatch>& pendingBGABatch() const {
+        return pending_bga_batch_;
+    }
+    const std::optional<CSCBGAPartialBatch>& lastAcceptedBGABatch() const {
+        return last_accepted_bga_batch_;
+    }
+    uint64_t lastTargetGrantCycle() const { return last_target_grant_cycle_; }
+    uint64_t lastTargetCompletionCycle() const { return last_target_completion_cycle_; }
+    uint64_t lastTargetPollEngineCycle() const { return last_target_poll_engine_cycle_; }
+    uint64_t lastBGAMaterializeEngineCycle() const { return last_bga_materialize_engine_cycle_; }
+    uint64_t lastBGAAcceptEngineCycle() const { return last_bga_accept_engine_cycle_; }
 
   private:
     friend struct CSCFreezeTestAccess;
@@ -120,7 +136,11 @@ class CSCDescriptorEngine {
     uint32_t valid_count_ = 0, chunk_index_ = 0;
     uint64_t local_sequence_ = 0, maximum_outstanding_ = 0;
     uint64_t progress_epoch_ = 0;
-    uint64_t next_bga_sequence_ = 1;
+    uint64_t next_bga_sequence_ = 1, descriptor_chunk_ordinal_ = 1;
+    uint32_t completed_target_generation_ = 0;
+    uint64_t last_target_grant_cycle_ = 0, last_target_completion_cycle_ = 0;
+    uint64_t last_target_poll_engine_cycle_ = 0;
+    uint64_t last_bga_materialize_engine_cycle_ = 0, last_bga_accept_engine_cycle_ = 0;
     CSCDescriptor current_{};
     float x_j_ = 0;
     std::array<uint8_t, 32> value_staging_{}, index_staging_{};
@@ -148,6 +168,8 @@ class CSCDescriptorEngine {
     CSCEngineCounters counters_;
     CSCBGAIntegrationConfig bga_config_{};
     CSCBGAProducerCallbacks bga_producer_callbacks_{};
+    std::optional<CSCBGAPartialBatch> pending_bga_batch_;
+    std::optional<CSCBGAPartialBatch> last_accepted_bga_batch_;
     bool bga_configuration_locked_ = false;
 };
 
@@ -195,6 +217,7 @@ class CSCNativeExecution {
     void configureBGAIntegration(const CSCBGAIntegrationConfig&,
                                  CSCBGAProducerCallbacks,
                                  CSCBGAOutputPortCallbacks);
+    void enableProductionBGAIntegration(const CSCBGAIntegrationConfig&);
     void tick();
     bool busy() const;
     bool done() const { return isTerminal(); }
@@ -212,6 +235,10 @@ class CSCNativeExecution {
     bool flushComplete() const { return flush_completed_; }
     CSCResultStatus bgResultStatus(uint32_t bg) const { return result_status_.at(bg); }
     bool resultValid() const;
+    bool productionBGAEnabled() const { return production_bga_enabled_; }
+    bool bgaComputeSubmitComplete() const { return bga_config_.enabled && isDone(); }
+    bool bgaOutputCompletionImplemented() const { return false; }
+    const CSCBankGroupAccumulator& bankGroupAccumulator(uint32_t global_bg) const;
     bool hasOutstandingRequest() const { return !outstanding_.empty(); }
     bool hasPendingTransactions() const;
     bool hasUnconsumedCompletion() const;
@@ -265,6 +292,7 @@ class CSCNativeExecution {
     CSCBGAIntegrationConfig bga_config_{};
     CSCBGAOutputPortCallbacks bga_output_callbacks_{};
     bool bga_configuration_locked_ = false;
+    bool production_bga_enabled_ = false;
 };
 
 }  // namespace csc_descriptor

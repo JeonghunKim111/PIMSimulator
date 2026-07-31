@@ -259,6 +259,8 @@ void MemorySystem::update()
         (*ranks)[i]->pimRank->serviceBGTargeted(
             memoryController->commandIssuedToRankThisCycle(i),
             memoryController->dataBusBusy() || (*ranks)[i]->dataBusBusy());
+    for (size_t i = 0; i < num_ranks_; ++i)
+        (*ranks)[i]->pimRank->stepCSCBGAs();
 
     // simply increments the currentClockCycle field for each object
     for (size_t i = 0; i < num_ranks_; i++)

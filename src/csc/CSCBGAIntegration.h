@@ -16,6 +16,7 @@ struct CSCBGAIntegrationConfig {
     bool enabled = false;
     CSCBGAConfig accumulator{};
     uint32_t logical_stream_id = kCSCM7ALogicalStream;
+    bool record_comparison_trace = false;
 
     void validate() const
     {
