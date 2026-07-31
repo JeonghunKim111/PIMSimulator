@@ -20,6 +20,8 @@ namespace DRAMSim { class PIMRank; }
 
 namespace csc_descriptor {
 
+class CSCPartialResultPath;
+struct CSCPartialResultPathConfig;
 struct CSCFreezeTestAccess;
 struct CSCAcceptanceTestAccess;
 struct CSCM6CompletionTestAccess;
@@ -242,6 +244,8 @@ class CSCNativeExecution {
                                  CSCBGAProducerCallbacks,
                                  CSCBGAOutputPortCallbacks);
     void enableProductionBGAIntegration(const CSCBGAIntegrationConfig&);
+    void configurePartialResultWriteback(
+        const CSCPartialResultPathConfig&);
     void tick();
     bool busy() const;
     bool done() const { return isTerminal(); }
@@ -263,6 +267,7 @@ class CSCNativeExecution {
     bool bgaComputeSubmitComplete() const;
     bool bgaDrainComplete() const;
     bool bgaExecutionComplete() const;
+    bool partialWritebackComplete() const;
     CSCBGAExecutionState bgaExecutionState() const;
     bool bgaOutputCompletionImplemented() const { return bga_config_.enabled; }
     const CSCBankGroupAccumulator& bankGroupAccumulator(uint32_t global_bg) const;
@@ -272,6 +277,7 @@ class CSCNativeExecution {
     const CSCBGAValidationCollector& bgaValidationCollector() const {
         return bga_validation_collector_;
     }
+    const CSCPartialResultPath& partialResultPath() const;
     bool bgaValidationSemanticMatches(double tolerance = 1e-5) const;
     bool hasOutstandingRequest() const { return !outstanding_.empty(); }
     bool hasPendingTransactions() const;
@@ -304,7 +310,10 @@ class CSCNativeExecution {
     CSCBGAInputResult submitBGA(const CSCBGAPartialBatch&);
     bool requestBGAFinalDrain(const CSCBGAProducerIdentity&);
     void serviceValidationBGAOutputs();
+    void servicePartialWritebackBGAOutputs();
+    void stepPartialResultWriteback();
     void commitAcceptedBGAOutput(uint32_t, const CSCBGAOutput&);
+    void recordAcceptedBGAOutputStats(const CSCBGAOutput&);
     void latchFailure(const CSCDescriptorEngine&);
     void updateMLP();
     DRAMSim::PIMRank& targetRank(uint32_t);
@@ -330,7 +339,10 @@ class CSCNativeExecution {
     CSCBGAIntegrationConfig bga_config_{};
     CSCBGAOutputPortCallbacks bga_output_callbacks_{};
     CSCBGAValidationCollector bga_validation_collector_{};
+    std::unique_ptr<CSCPartialResultPathConfig> partial_writeback_config_;
+    std::unique_ptr<CSCPartialResultPath> partial_result_path_;
     uint32_t validation_round_robin_cursor_ = 0;
+    uint32_t partial_writeback_round_robin_cursor_ = 0;
     bool bga_configuration_locked_ = false;
     bool production_bga_enabled_ = false;
 };

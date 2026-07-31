@@ -14,7 +14,11 @@ namespace csc_descriptor {
 
 constexpr uint32_t kCSCM7ALogicalStream = 0;
 
-enum class CSCBGAOutputConsumerMode { EXTERNAL, VALIDATION_ROUND_ROBIN };
+enum class CSCBGAOutputConsumerMode {
+    EXTERNAL,
+    VALIDATION_ROUND_ROBIN,
+    PARTIAL_RESULT_WRITEBACK
+};
 
 enum class CSCBGAExecutionState {
     DISABLED, RUNNING_COMPUTE, DRAINING_BGA,
@@ -153,6 +157,50 @@ struct CSCBGAOutputPortCallbacks {
         return bool(has_output) && bool(peek_output) && bool(accept_output);
     }
 };
+
+// A destination owns at most one reservation per instance. reserve() may
+// reject without side effects when its bounded storage is full. Once the
+// source output has been accepted, commitReserved() must not throw; this keeps
+// source retirement and destination ownership transfer atomic. A future
+// logic-die accumulator can implement this same boundary without changing the
+// BGA or descriptor engine.
+class CSCBGAOutputDestination {
+  public:
+    virtual ~CSCBGAOutputDestination() = default;
+    virtual bool reserve(const CSCBGAOutputPortValue&) = 0;
+    virtual void commitReserved() noexcept = 0;
+    virtual void cancelReserved() noexcept = 0;
+};
+
+enum class CSCBGAOutputTransferResult {
+    NO_OUTPUT,
+    DESTINATION_BACKPRESSURE,
+    ACCEPTED
+};
+
+inline CSCBGAOutputTransferResult transferCSCBGAOutput(
+    uint32_t global_bg_id, const CSCBGAOutputPortCallbacks& source,
+    CSCBGAOutputDestination& destination)
+{
+    if (!source.complete())
+        throw std::invalid_argument("incomplete BGA output port");
+    if (!source.has_output(global_bg_id))
+        return CSCBGAOutputTransferResult::NO_OUTPUT;
+
+    const CSCBGAOutputPortValue value{
+        global_bg_id, source.peek_output(global_bg_id)};
+    if (!destination.reserve(value))
+        return CSCBGAOutputTransferResult::DESTINATION_BACKPRESSURE;
+
+    try {
+        source.accept_output(global_bg_id);
+    } catch (...) {
+        destination.cancelReserved();
+        throw;
+    }
+    destination.commitReserved();
+    return CSCBGAOutputTransferResult::ACCEPTED;
+}
 }  // namespace csc_descriptor
 
 #endif
