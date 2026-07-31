@@ -270,9 +270,12 @@ class CSCNativeExecution {
     bool bgaExecutionComplete() const;
     bool partialWritebackComplete() const;
     bool hostReadTransportComplete() const;
+    bool hostReadbackComplete() const;
+    bool hostReductionComplete() const;
     bool hasHostReturnedBurst() const;
     const CSCHostReturnedBurst& peekHostReturnedBurst() const;
     void acceptHostReturnedBurst();
+    const std::vector<float>& hostReducedResult() const;
     CSCBGAExecutionState bgaExecutionState() const;
     bool bgaOutputCompletionImplemented() const { return bga_config_.enabled; }
     const CSCBankGroupAccumulator& bankGroupAccumulator(uint32_t global_bg) const;

@@ -20,7 +20,10 @@ void CSCPartialResultPathConfig::validate() const
         !write_issue_limit_per_rank_per_cycle ||
         !read_issue_limit_per_channel_per_cycle ||
         !max_inflight_reads_per_channel ||
-        !host_return_queue_capacity_bursts)
+        !host_return_queue_capacity_bursts ||
+        (host_reduction_enabled &&
+         (!reduction_queue_capacity_records ||
+          !host_reduce_records_per_cycle)))
         throw std::invalid_argument("invalid partial-result writeback capacity");
 }
 
@@ -40,6 +43,15 @@ CSCPartialResultPath::CSCPartialResultPath(
         config_.channel_count);
     inflight_reads_by_channel_.resize(config_.channel_count);
     channel_read_rr_cursor_.resize(config_.channel_count);
+    if (config_.host_reduction_enabled) {
+        reduction_queue_.resize(
+            config_.reduction_queue_capacity_records);
+        reduction_batch_.reserve(
+            config_.host_reduce_records_per_cycle);
+    }
+    final_y_fp32_.assign(rows_, 0.0F);
+    row_reduced_.assign(rows_, false);
+    row_first_global_bg_.assign(rows_, 0);
     for (auto& state : bg_) {
         state.resident.resize(config_.buffer_capacity_bursts_per_bg);
         state.buffer_reserved.resize(
@@ -635,6 +647,219 @@ void CSCPartialResultPath::stepHostReadback()
     updateReadTransportCompletion();
 }
 
+void CSCPartialResultPath::enqueueReductionRecord(
+    const ReductionRecord& record) noexcept
+{
+    if (!config_.host_reduction_enabled ||
+        reduction_queue_count_ >= reduction_queue_.size() ||
+        reduction_queue_[reduction_queue_tail_]) {
+        fail("host reduction queue reservation mismatch");
+        return;
+    }
+    reduction_queue_[reduction_queue_tail_] = record;
+    reduction_queue_tail_ =
+        (reduction_queue_tail_ + 1) % reduction_queue_.size();
+    ++reduction_queue_count_;
+}
+
+CSCPartialResultPath::ReductionRecord
+CSCPartialResultPath::dequeueReductionRecord() noexcept
+{
+    if (!reduction_queue_count_ ||
+        !reduction_queue_[reduction_queue_head_]) {
+        fail("host reduction dequeue mismatch");
+        return {};
+    }
+    const auto record = *reduction_queue_[reduction_queue_head_];
+    reduction_queue_[reduction_queue_head_].reset();
+    reduction_queue_head_ =
+        (reduction_queue_head_ + 1) % reduction_queue_.size();
+    --reduction_queue_count_;
+    return record;
+}
+
+const CSCPartialResultPath::ReductionRecord&
+CSCPartialResultPath::frontReductionRecord() const
+{
+    if (!reduction_queue_count_ ||
+        !reduction_queue_[reduction_queue_head_])
+        throw std::logic_error("host reduction queue empty");
+    return *reduction_queue_[reduction_queue_head_];
+}
+
+void CSCPartialResultPath::completeReductionBatch()
+{
+    if (!reduction_batch_inflight_ ||
+        reduction_batch_completion_cycle_ > cycle_)
+        return;
+    if (reduction_batch_.empty()) {
+        fail("reduction completion without in-flight records");
+        return;
+    }
+    for (const auto& item : reduction_batch_) {
+        const auto& envelope = item.envelope;
+        const uint32_t row = envelope.record.row_idx;
+        if (row >= rows_) {
+            fail("host reduction row out of range");
+            return;
+        }
+        if (row_reduced_[row]) {
+            if (row_first_global_bg_[row] == envelope.global_bg_id)
+                ++reduction_counters_
+                      .same_row_repeated_record_merges;
+            else
+                ++reduction_counters_.same_row_cross_bg_merges;
+        } else {
+            row_reduced_[row] = true;
+            row_first_global_bg_[row] = envelope.global_bg_id;
+        }
+        final_y_fp32_[row] =
+            static_cast<float>(
+                final_y_fp32_[row] + envelope.record.value);
+        ++reduction_counters_.reduced_partial_records;
+        reduction_counters_.reduced_contribution_count +=
+            envelope.contribution_count;
+        ++reduction_counters_.fp32_host_add_count;
+    }
+    ++reduction_counters_.reduction_batches_completed;
+    if (!reduction_counters_.first_host_reduce_cycle)
+        reduction_counters_.first_host_reduce_cycle = cycle_;
+    reduction_counters_.last_host_reduce_cycle = cycle_;
+    reduction_batch_.clear();
+    reduction_batch_inflight_ = false;
+    reduction_batch_completion_cycle_ = 0;
+}
+
+void CSCPartialResultPath::acceptReturnedBurstForReduction()
+{
+    if (!hasHostReturnedBurst()) return;
+    const auto returned = peekHostReturnedBurst();
+    const auto& burst = returned.burst;
+    if (!burst.valid_record_count ||
+        burst.valid_record_count > kCSCPartialRecordsPerBurst) {
+        fail("invalid returned burst record count");
+        return;
+    }
+    if (reduction_queue_.size() - reduction_queue_count_ <
+        burst.valid_record_count) {
+        ++reduction_counters_.reduction_queue_backpressure_cycles;
+        return;
+    }
+
+    std::array<ReductionRecord, kCSCPartialRecordsPerBurst> records{};
+    for (uint32_t index = 0;
+         index < burst.valid_record_count; ++index) {
+        const auto& envelope = burst.records[index];
+        if (envelope.record.row_idx >= rows_ ||
+            !envelope.generation ||
+            envelope.generation != generation_ ||
+            !envelope.contribution_count ||
+            envelope.global_bg_id >= config_.global_bg_count ||
+            envelope.global_bg_id != burst.global_bg_id) {
+            fail("invalid returned partial-result record");
+            return;
+        }
+        records[index] = {envelope, index, cycle_ + 1};
+    }
+
+    try {
+        acceptHostReturnedBurst();
+    } catch (const std::exception& error) {
+        fail(std::string("returned burst ownership transfer failed: ") +
+             error.what());
+        return;
+    }
+    for (uint32_t index = 0;
+         index < burst.valid_record_count; ++index) {
+        enqueueReductionRecord(records[index]);
+        if (error_) return;
+    }
+    reduction_counters_.reduction_records_enqueued +=
+        burst.valid_record_count;
+    if (!reduction_counters_.first_returned_burst_accept_cycle)
+        reduction_counters_.first_returned_burst_accept_cycle = cycle_;
+    reduction_counters_.peak_reduction_queue_occupancy =
+        std::max<uint64_t>(
+            reduction_counters_.peak_reduction_queue_occupancy,
+            reduction_queue_count_);
+}
+
+void CSCPartialResultPath::issueReductionBatch()
+{
+    if (reduction_batch_inflight_ || !reduction_queue_count_)
+        return;
+    if (frontReductionRecord().eligible_cycle > cycle_) return;
+
+    const uint32_t limit =
+        std::min(config_.host_reduce_records_per_cycle,
+                 reduction_queue_count_);
+    for (uint32_t index = 0; index < limit; ++index) {
+        if (frontReductionRecord().eligible_cycle > cycle_) break;
+        reduction_batch_.push_back(dequeueReductionRecord());
+        if (error_) return;
+    }
+    if (reduction_batch_.empty()) return;
+    reduction_batch_inflight_ = true;
+    reduction_batch_completion_cycle_ =
+        cycle_ + std::max<uint32_t>(
+                     1, config_.host_reduce_latency_cycles);
+    reduction_counters_.reduction_records_issued +=
+        reduction_batch_.size();
+    ++reduction_counters_.reduction_batches_issued;
+    if (!reduction_counters_.first_reduction_batch_issue_cycle)
+        reduction_counters_.first_reduction_batch_issue_cycle = cycle_;
+}
+
+bool CSCPartialResultPath::reductionConservationInvariant() const
+{
+    return reduction_counters_.reduction_records_enqueued ==
+               readback_counters_.readback_records &&
+           reduction_counters_.reduction_records_issued ==
+               reduction_counters_.reduction_records_enqueued &&
+           reduction_counters_.reduced_partial_records ==
+               reduction_counters_.reduction_records_issued &&
+           reduction_counters_.reduced_contribution_count ==
+               readback_counters_.readback_contribution_sum &&
+           reduction_counters_.fp32_host_add_count ==
+               reduction_counters_.reduced_partial_records &&
+           reduction_counters_.reduction_batches_issued ==
+               reduction_counters_.reduction_batches_completed;
+}
+
+void CSCPartialResultPath::updateHostCompletion()
+{
+    if (error_) return;
+    if (!reduction_counters_.host_readback_complete_cycle &&
+        hostReadTransportComplete() &&
+        host_return_queue_.empty() &&
+        !reserved_host_return_slots_ &&
+        readback_counters_.returned_bursts_delivered ==
+            readback_counters_.returned_bursts_committed)
+        reduction_counters_.host_readback_complete_cycle = cycle_;
+
+    if (reduction_counters_.host_reduction_complete_cycle ||
+        !hostReadbackComplete() || reduction_queue_count_ ||
+        reduction_batch_inflight_)
+        return;
+    if (!reductionConservationInvariant()) {
+        fail("host reduction conservation mismatch");
+        return;
+    }
+    reduction_counters_.host_reduction_complete_cycle = cycle_;
+}
+
+void CSCPartialResultPath::stepHostReduction()
+{
+    if (!config_.host_reduction_enabled) return;
+    completeReductionBatch();
+    if (error_) return;
+    acceptReturnedBurstForReduction();
+    if (error_) return;
+    issueReductionBatch();
+    if (error_) return;
+    updateHostCompletion();
+}
+
 void CSCPartialResultPath::step(
     uint64_t cycle,
     const std::vector<bool>& final_drain_complete)
@@ -654,6 +879,8 @@ void CSCPartialResultPath::step(
     updateCompletion();
     if (error_) return;
     stepHostReadback();
+    if (error_) return;
+    stepHostReduction();
 }
 
 bool CSCPartialResultPath::partialWritebackComplete() const
@@ -665,6 +892,27 @@ bool CSCPartialResultPath::hostReadTransportComplete() const
 {
     return !error_ &&
            readback_counters_.read_transport_complete_cycle != 0;
+}
+
+bool CSCPartialResultPath::hostReadbackComplete() const
+{
+    return config_.host_reduction_enabled && !error_ &&
+           reduction_counters_.host_readback_complete_cycle != 0;
+}
+
+bool CSCPartialResultPath::hostReductionComplete() const
+{
+    return config_.host_reduction_enabled && !error_ &&
+           reduction_counters_.host_reduction_complete_cycle != 0;
+}
+
+const std::vector<float>&
+CSCPartialResultPath::hostReducedResult() const
+{
+    if (!hostReductionComplete())
+        throw std::logic_error(
+            "host reduced result before reduction completion");
+    return final_y_fp32_;
 }
 
 bool CSCPartialResultPath::hasHostReturnedBurst() const
