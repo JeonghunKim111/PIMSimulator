@@ -222,8 +222,18 @@ struct CSCExecutionCounters : CSCEngineCounters {
     uint64_t validation_output_drain_cycles = 0;
     uint64_t external_consumer_wait_cycles = 0;
     uint64_t compute_submit_complete_cycle = 0;
+    uint64_t execution_start_cycle = 0;
+    uint64_t bga_drain_complete_cycle = 0;
     uint64_t first_bga_output_cycle = 0, last_bga_output_accept_cycle = 0;
     uint64_t bga_execution_complete_cycle = 0;
+    uint64_t end_to_end_complete_cycle = 0;
+    uint64_t result_valid_cycle = 0;
+    uint64_t t_compute_submit = 0;
+    uint64_t t_bga_drain = 0;
+    uint64_t t_writeback = 0;
+    uint64_t t_readback = 0;
+    uint64_t t_host_reduce = 0;
+    uint64_t t_end_to_end = 0;
     std::array<uint64_t, 128> per_pimblock_active_cycles{}, per_pimblock_targeted_ops{};
     uint64_t rank_targeted_grants = 0, rank_command_bus_stall_cycles = 0;
     uint64_t rank_resource_conflict_stall_cycles = 0, rank_mode_drain_cycles = 0;
@@ -272,10 +282,12 @@ class CSCNativeExecution {
     bool hostReadTransportComplete() const;
     bool hostReadbackComplete() const;
     bool hostReductionComplete() const;
+    bool endToEndSpMVComplete() const;
     bool hasHostReturnedBurst() const;
     const CSCHostReturnedBurst& peekHostReturnedBurst() const;
     void acceptHostReturnedBurst();
     const std::vector<float>& hostReducedResult() const;
+    const std::vector<float>& finalResult() const;
     CSCBGAExecutionState bgaExecutionState() const;
     bool bgaOutputCompletionImplemented() const { return bga_config_.enabled; }
     const CSCBankGroupAccumulator& bankGroupAccumulator(uint32_t global_bg) const;
@@ -307,6 +319,7 @@ class CSCNativeExecution {
     friend struct CSCFreezeTestAccess;
     friend struct CSCAcceptanceTestAccess;
     friend struct CSCM6CompletionTestAccess;
+    friend struct CSCM7BEndToEndTestAccess;
     bool submit(CSCDescriptorEngine*, const DRAMSim::RequestToken&, uint64_t);
     DRAMSim::RequestToken makeToken(uint32_t, CSCRequestKind, uint64_t);
     void failGlobal(CSCError, const std::string&, int32_t engine = -1);
@@ -324,6 +337,8 @@ class CSCNativeExecution {
     void recordAcceptedBGAOutputStats(const CSCBGAOutput&);
     void latchFailure(const CSCDescriptorEngine&);
     void updateMLP();
+    void finalizeEndToEnd();
+    bool endToEndConservationValid() const;
     DRAMSim::PIMRank& targetRank(uint32_t);
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -353,6 +368,7 @@ class CSCNativeExecution {
     uint32_t partial_writeback_round_robin_cursor_ = 0;
     bool bga_configuration_locked_ = false;
     bool production_bga_enabled_ = false;
+    uint32_t result_valid_generation_ = 0;
 };
 
 }  // namespace csc_descriptor
