@@ -58,6 +58,8 @@ CSCPartialResultPathConfig pathConfig(uint32_t buffer = 8,
 {
     CSCPartialResultPathConfig config;
     config.global_bg_count = kCSCGlobalBGs;
+    config.channel_count = kCSCGlobalBGs / 4;
+    config.ranks_per_channel = 1;
     config.bank_groups_per_rank = 4;
     config.buffer_capacity_bursts_per_bg = buffer;
     config.pending_capacity_bursts_per_bg = pending;
@@ -146,6 +148,8 @@ TEST(CSCM7BPartialWritebackTest, StorageUsesConfiguredTopology)
 {
     auto config = pathConfig();
     config.global_bg_count = 8;
+    config.channel_count = 2;
+    config.ranks_per_channel = 1;
     config.bank_groups_per_rank = 4;
     CSCPartialResultPath path(config, 16, 7);
     EXPECT_EQ(path.globalBGCount(), 8U);

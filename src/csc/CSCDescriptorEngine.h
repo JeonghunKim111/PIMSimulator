@@ -22,6 +22,7 @@ namespace csc_descriptor {
 
 class CSCPartialResultPath;
 struct CSCPartialResultPathConfig;
+struct CSCHostReturnedBurst;
 struct CSCFreezeTestAccess;
 struct CSCAcceptanceTestAccess;
 struct CSCM6CompletionTestAccess;
@@ -268,6 +269,10 @@ class CSCNativeExecution {
     bool bgaDrainComplete() const;
     bool bgaExecutionComplete() const;
     bool partialWritebackComplete() const;
+    bool hostReadTransportComplete() const;
+    bool hasHostReturnedBurst() const;
+    const CSCHostReturnedBurst& peekHostReturnedBurst() const;
+    void acceptHostReturnedBurst();
     CSCBGAExecutionState bgaExecutionState() const;
     bool bgaOutputCompletionImplemented() const { return bga_config_.enabled; }
     const CSCBankGroupAccumulator& bankGroupAccumulator(uint32_t global_bg) const;

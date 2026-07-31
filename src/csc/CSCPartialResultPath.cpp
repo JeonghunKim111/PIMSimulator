@@ -3,17 +3,24 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <tuple>
 
 namespace csc_descriptor {
 
 void CSCPartialResultPathConfig::validate() const
 {
-    if (!global_bg_count || !bank_groups_per_rank ||
-        global_bg_count % bank_groups_per_rank ||
+    const uint64_t topology_bg_count =
+        uint64_t(channel_count) * ranks_per_channel *
+        bank_groups_per_rank;
+    if (!global_bg_count || !channel_count || !ranks_per_channel ||
+        !bank_groups_per_rank || topology_bg_count != global_bg_count ||
         !buffer_capacity_bursts_per_bg ||
         !pending_capacity_bursts_per_bg ||
         !max_inflight_writes_per_bg ||
-        !write_issue_limit_per_rank_per_cycle)
+        !write_issue_limit_per_rank_per_cycle ||
+        !read_issue_limit_per_channel_per_cycle ||
+        !max_inflight_reads_per_channel ||
+        !host_return_queue_capacity_bursts)
         throw std::invalid_argument("invalid partial-result writeback capacity");
 }
 
@@ -29,9 +36,15 @@ CSCPartialResultPath::CSCPartialResultPath(
     rank_rr_cursor_.resize(
         config_.global_bg_count / config_.bank_groups_per_rank);
     counters_.peak_inflight_writes_by_bg.resize(config_.global_bg_count);
+    readback_counters_.peak_inflight_reads_by_channel.resize(
+        config_.channel_count);
+    inflight_reads_by_channel_.resize(config_.channel_count);
+    channel_read_rr_cursor_.resize(config_.channel_count);
     for (auto& state : bg_) {
         state.resident.resize(config_.buffer_capacity_bursts_per_bg);
         state.buffer_reserved.resize(
+            config_.buffer_capacity_bursts_per_bg, false);
+        state.read_inflight.resize(
             config_.buffer_capacity_bursts_per_bg, false);
     }
     write_trace_capacity_ =
@@ -192,6 +205,7 @@ void CSCPartialResultPath::completeWrites()
             if (!state.reserved_buffer_slots ||
                 transaction.buffer_slot >= state.resident.size() ||
                 state.resident[transaction.buffer_slot] ||
+                state.read_inflight[transaction.buffer_slot] ||
                 !state.buffer_reserved[transaction.buffer_slot]) {
                 fail("write completion without reserved buffer slot");
                 return;
@@ -241,7 +255,9 @@ uint32_t CSCPartialResultPath::freeBufferSlot(uint32_t global_bg) const
 {
     const auto& state = bg_.at(global_bg);
     for (uint32_t slot = 0; slot < state.resident.size(); ++slot)
-        if (!state.resident[slot] && !state.buffer_reserved[slot]) return slot;
+        if (!state.resident[slot] && !state.buffer_reserved[slot] &&
+            !state.read_inflight[slot])
+            return slot;
     return state.resident.size();
 }
 
@@ -377,6 +393,248 @@ void CSCPartialResultPath::updateCompletion()
     counters_.partial_writeback_complete_cycle = cycle_;
 }
 
+bool CSCPartialResultPath::findReadCandidate(
+    uint32_t global_bg, uint32_t& selected_slot) const
+{
+    const auto& state = bg_.at(global_bg);
+    uint64_t sequence = std::numeric_limits<uint64_t>::max();
+    selected_slot = state.resident.size();
+    for (uint32_t slot = 0; slot < state.resident.size(); ++slot) {
+        if (!state.resident[slot] || state.read_inflight[slot]) continue;
+        const uint64_t candidate =
+            state.resident[slot]->writeback_burst_sequence;
+        if (candidate < sequence) {
+            sequence = candidate;
+            selected_slot = slot;
+        }
+    }
+    return selected_slot < state.resident.size() &&
+           sequence == state.next_read_burst_sequence;
+}
+
+uint64_t CSCPartialResultPath::totalInflightReads() const
+{
+    uint64_t total = 0;
+    for (const auto& channel : inflight_reads_by_channel_)
+        total += channel.size();
+    return total;
+}
+
+void CSCPartialResultPath::completeReads()
+{
+    std::vector<ReadTransaction> completed;
+    for (auto& channel : inflight_reads_by_channel_) {
+        for (auto it = channel.begin(); it != channel.end();) {
+            if (it->completion_cycle <= cycle_) {
+                completed.push_back(*it);
+                it = channel.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    std::sort(completed.begin(), completed.end(),
+              [](const ReadTransaction& a, const ReadTransaction& b) {
+                  return std::tie(a.completion_cycle, a.channel_id,
+                                  a.rank_id, a.local_bg_id,
+                                  a.burst.writeback_burst_sequence) <
+                         std::tie(b.completion_cycle, b.channel_id,
+                                  b.rank_id, b.local_bg_id,
+                                  b.burst.writeback_burst_sequence);
+              });
+    for (const auto& transaction : completed) {
+        const uint32_t global_rank =
+            transaction.channel_id * config_.ranks_per_channel +
+            transaction.rank_id;
+        const uint32_t global_bg =
+            global_rank * config_.bank_groups_per_rank +
+            transaction.local_bg_id;
+        if (global_bg >= bg_.size() ||
+            transaction.buffer_slot >= bg_[global_bg].resident.size() ||
+            !bg_[global_bg].resident[transaction.buffer_slot] ||
+            !bg_[global_bg].read_inflight[transaction.buffer_slot] ||
+            bg_[global_bg].resident[transaction.buffer_slot]
+                    ->writeback_burst_sequence !=
+                transaction.burst.writeback_burst_sequence) {
+            fail("read completion without in-flight resident burst");
+            return;
+        }
+        if (!reserved_host_return_slots_ ||
+            host_return_queue_.size() >=
+                config_.host_return_queue_capacity_bursts) {
+            fail("read completion without reserved return slot");
+            return;
+        }
+        host_return_queue_.push_back(
+            {transaction.burst, transaction.channel_id,
+             transaction.rank_id, transaction.local_bg_id, cycle_ + 1});
+        --reserved_host_return_slots_;
+        bg_[global_bg].resident[transaction.buffer_slot].reset();
+        bg_[global_bg].read_inflight[transaction.buffer_slot] = false;
+
+        ++readback_counters_.read_requests_completed;
+        ++readback_counters_.returned_bursts_committed;
+        readback_counters_.last_read_complete_cycle = cycle_;
+        if (!readback_counters_.first_read_complete_cycle)
+            readback_counters_.first_read_complete_cycle = cycle_;
+        readback_counters_.peak_host_return_queue_occupancy =
+            std::max<uint64_t>(
+                readback_counters_.peak_host_return_queue_occupancy,
+                host_return_queue_.size());
+        readback_counters_.readback_transferred_bytes +=
+            kCSCPartialResultBurstBytes;
+        readback_counters_.readback_records +=
+            transaction.burst.valid_record_count;
+        readback_counters_.readback_useful_bytes +=
+            uint64_t(transaction.burst.valid_record_count) *
+            kCSCPartialResultRecordBytes;
+        readback_counters_.readback_padding_bytes +=
+            kCSCPartialResultBurstBytes -
+            uint64_t(transaction.burst.valid_record_count) *
+                kCSCPartialResultRecordBytes;
+        for (uint32_t record = 0;
+             record < transaction.burst.valid_record_count; ++record)
+            readback_counters_.readback_contribution_sum +=
+                transaction.burst.records[record].contribution_count;
+    }
+}
+
+void CSCPartialResultPath::issueReads()
+{
+    const uint32_t bgs_per_channel =
+        config_.ranks_per_channel * config_.bank_groups_per_rank;
+    for (uint32_t channel = 0; channel < config_.channel_count; ++channel) {
+        uint32_t issued = 0;
+        uint32_t scanned_without_issue = 0;
+        while (issued < config_.read_issue_limit_per_channel_per_cycle &&
+               scanned_without_issue < bgs_per_channel) {
+            if (inflight_reads_by_channel_[channel].size() >=
+                config_.max_inflight_reads_per_channel) {
+                ++readback_counters_.read_inflight_backpressure_cycles;
+                break;
+            }
+            if (host_return_queue_.size() +
+                    reserved_host_return_slots_ >=
+                config_.host_return_queue_capacity_bursts) {
+                ++readback_counters_.return_queue_backpressure_cycles;
+                break;
+            }
+            const uint32_t channel_bg =
+                channel_read_rr_cursor_[channel];
+            channel_read_rr_cursor_[channel] =
+                (channel_bg + 1) % bgs_per_channel;
+            const uint32_t rank =
+                channel_bg / config_.bank_groups_per_rank;
+            const uint32_t local_bg =
+                channel_bg % config_.bank_groups_per_rank;
+            const uint32_t global_bg =
+                (channel * config_.ranks_per_channel + rank) *
+                    config_.bank_groups_per_rank +
+                local_bg;
+            uint32_t slot = 0;
+            if (!findReadCandidate(global_bg, slot)) {
+                ++scanned_without_issue;
+                continue;
+            }
+
+            auto& state = bg_[global_bg];
+            const auto burst = *state.resident[slot];
+            if (!burst.valid_record_count ||
+                burst.valid_record_count > kCSCPartialRecordsPerBurst) {
+                fail("invalid resident burst record count");
+                return;
+            }
+            state.read_inflight[slot] = true;
+            ++state.next_read_burst_sequence;
+            ++reserved_host_return_slots_;
+            const uint64_t completion =
+                cycle_ + std::max<uint32_t>(
+                             1, config_.read_latency_cycles);
+            inflight_reads_by_channel_[channel].push_back(
+                {burst, slot, channel, rank, local_bg, cycle_,
+                 completion});
+            ++readback_counters_.read_requests_issued;
+            readback_counters_.last_read_issue_cycle = cycle_;
+            if (!readback_counters_.first_read_issue_cycle)
+                readback_counters_.first_read_issue_cycle = cycle_;
+            readback_counters_.peak_inflight_reads =
+                std::max(readback_counters_.peak_inflight_reads,
+                         totalInflightReads());
+            readback_counters_.peak_inflight_reads_by_channel[channel] =
+                std::max<uint64_t>(
+                    readback_counters_
+                        .peak_inflight_reads_by_channel[channel],
+                    inflight_reads_by_channel_[channel].size());
+            readback_counters_.peak_reserved_return_slots =
+                std::max<uint64_t>(
+                    readback_counters_.peak_reserved_return_slots,
+                    reserved_host_return_slots_);
+            ++issued;
+            scanned_without_issue = 0;
+        }
+    }
+}
+
+bool CSCPartialResultPath::readbackConservationInvariant() const
+{
+    return readback_counters_.read_requests_issued ==
+               counters_.write_requests_completed &&
+           readback_counters_.read_requests_completed ==
+               readback_counters_.read_requests_issued &&
+           readback_counters_.returned_bursts_committed ==
+               readback_counters_.read_requests_completed &&
+           readback_counters_.readback_records ==
+               counters_.partial_records_generated &&
+           readback_counters_.readback_contribution_sum ==
+               counters_.partial_record_contribution_sum &&
+           readback_counters_.readback_transferred_bytes ==
+               uint64_t(kCSCPartialResultBurstBytes) *
+                   readback_counters_.read_requests_completed &&
+           readback_counters_.readback_useful_bytes ==
+               uint64_t(kCSCPartialResultRecordBytes) *
+                   readback_counters_.readback_records &&
+           readback_counters_.readback_padding_bytes ==
+               readback_counters_.readback_transferred_bytes -
+                   readback_counters_.readback_useful_bytes &&
+           readback_counters_.readback_transferred_bytes ==
+               counters_.writeback_transferred_bytes &&
+           readback_counters_.readback_useful_bytes ==
+               counters_.writeback_useful_bytes &&
+           readback_counters_.readback_padding_bytes ==
+               counters_.writeback_padding_bytes;
+}
+
+void CSCPartialResultPath::updateReadTransportCompletion()
+{
+    if (error_ || !readback_counters_.host_readback_start_cycle ||
+        readback_counters_.read_transport_complete_cycle)
+        return;
+    if (totalInflightReads() || reserved_host_return_slots_) return;
+    for (const auto& state : bg_)
+        for (uint32_t slot = 0; slot < state.resident.size(); ++slot)
+            if (state.resident[slot] || state.read_inflight[slot])
+                return;
+    if (!readbackConservationInvariant()) {
+        fail("partial-result readback conservation mismatch");
+        return;
+    }
+    readback_counters_.read_transport_complete_cycle = cycle_;
+}
+
+void CSCPartialResultPath::stepHostReadback()
+{
+    if (!partialWritebackComplete()) return;
+    if (!readback_counters_.host_readback_start_cycle) {
+        readback_counters_.host_readback_start_cycle = cycle_;
+        return;
+    }
+    completeReads();
+    if (error_) return;
+    issueReads();
+    if (error_) return;
+    updateReadTransportCompletion();
+}
+
 void CSCPartialResultPath::step(
     uint64_t cycle,
     const std::vector<bool>& final_drain_complete)
@@ -394,11 +652,41 @@ void CSCPartialResultPath::step(
     issueWrites();
     if (error_) return;
     updateCompletion();
+    if (error_) return;
+    stepHostReadback();
 }
 
 bool CSCPartialResultPath::partialWritebackComplete() const
 {
     return !error_ && counters_.partial_writeback_complete_cycle != 0;
+}
+
+bool CSCPartialResultPath::hostReadTransportComplete() const
+{
+    return !error_ &&
+           readback_counters_.read_transport_complete_cycle != 0;
+}
+
+bool CSCPartialResultPath::hasHostReturnedBurst() const
+{
+    return !host_return_queue_.empty() &&
+           host_return_queue_.front().host_visible_cycle <= cycle_;
+}
+
+const CSCHostReturnedBurst&
+CSCPartialResultPath::peekHostReturnedBurst() const
+{
+    if (!hasHostReturnedBurst())
+        throw std::logic_error("no host-visible returned burst");
+    return host_return_queue_.front();
+}
+
+void CSCPartialResultPath::acceptHostReturnedBurst()
+{
+    if (!hasHostReturnedBurst())
+        throw std::logic_error("no host-visible returned burst");
+    host_return_queue_.pop_front();
+    ++readback_counters_.returned_bursts_delivered;
 }
 
 uint32_t CSCPartialResultPath::packerRecordCount(uint32_t bg) const
@@ -427,6 +715,14 @@ uint32_t CSCPartialResultPath::residentBurstCount(uint32_t bg) const
 uint32_t CSCPartialResultPath::reservedBufferSlots(uint32_t bg) const
 {
     return bg_.at(bg).reserved_buffer_slots;
+}
+
+uint32_t CSCPartialResultPath::readInflightBufferSlots(uint32_t bg) const
+{
+    uint32_t count = 0;
+    for (bool inflight : bg_.at(bg).read_inflight)
+        if (inflight) ++count;
+    return count;
 }
 
 const CSCPartialResultBurst& CSCPartialResultPath::residentBurst(

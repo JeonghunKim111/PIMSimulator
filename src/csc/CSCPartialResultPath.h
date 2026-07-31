@@ -12,6 +12,8 @@
 
 namespace csc_descriptor {
 
+struct CSCM7BHostReadbackTestAccess;
+
 constexpr uint32_t kCSCPartialResultRecordBytes = 8;
 constexpr uint32_t kCSCPartialResultBurstBytes = 32;
 constexpr uint32_t kCSCPartialRecordsPerBurst = 4;
@@ -46,12 +48,18 @@ struct CSCPartialResultBurst {
 
 struct CSCPartialResultPathConfig {
     uint32_t global_bg_count = 0;
+    uint32_t channel_count = 0;
+    uint32_t ranks_per_channel = 0;
     uint32_t bank_groups_per_rank = 0;
     uint32_t buffer_capacity_bursts_per_bg = 16;
     uint32_t pending_capacity_bursts_per_bg = 4;
     uint32_t write_latency_cycles = 4;
     uint32_t max_inflight_writes_per_bg = 2;
     uint32_t write_issue_limit_per_rank_per_cycle = 1;
+    uint32_t read_latency_cycles = 4;
+    uint32_t read_issue_limit_per_channel_per_cycle = 1;
+    uint32_t max_inflight_reads_per_channel = 2;
+    uint32_t host_return_queue_capacity_bursts = 16;
 
     void validate() const;
 };
@@ -90,6 +98,38 @@ struct CSCPartialResultWriteTrace {
     uint64_t completion_cycle = 0;
 };
 
+struct CSCHostReturnedBurst {
+    CSCPartialResultBurst burst{};
+    uint32_t channel_id = 0;
+    uint32_t rank_id = 0;
+    uint32_t local_bg_id = 0;
+    uint64_t host_visible_cycle = 0;
+};
+
+struct CSCHostReadbackCounters {
+    uint64_t host_readback_start_cycle = 0;
+    uint64_t first_read_issue_cycle = 0;
+    uint64_t first_read_complete_cycle = 0;
+    uint64_t last_read_issue_cycle = 0;
+    uint64_t last_read_complete_cycle = 0;
+    uint64_t read_transport_complete_cycle = 0;
+    uint64_t read_requests_issued = 0;
+    uint64_t read_requests_completed = 0;
+    uint64_t peak_inflight_reads = 0;
+    std::vector<uint64_t> peak_inflight_reads_by_channel;
+    uint64_t returned_bursts_committed = 0;
+    uint64_t returned_bursts_delivered = 0;
+    uint64_t peak_host_return_queue_occupancy = 0;
+    uint64_t peak_reserved_return_slots = 0;
+    uint64_t read_inflight_backpressure_cycles = 0;
+    uint64_t return_queue_backpressure_cycles = 0;
+    uint64_t readback_transferred_bytes = 0;
+    uint64_t readback_useful_bytes = 0;
+    uint64_t readback_padding_bytes = 0;
+    uint64_t readback_records = 0;
+    uint64_t readback_contribution_sum = 0;
+};
+
 class CSCPartialResultPath final : public CSCBGAOutputDestination {
   public:
     CSCPartialResultPath(const CSCPartialResultPathConfig&, uint32_t rows,
@@ -103,9 +143,16 @@ class CSCPartialResultPath final : public CSCBGAOutputDestination {
               const std::vector<bool>& final_drain_complete);
 
     bool partialWritebackComplete() const;
+    bool hostReadTransportComplete() const;
+    bool hasHostReturnedBurst() const;
+    const CSCHostReturnedBurst& peekHostReturnedBurst() const;
+    void acceptHostReturnedBurst();
     bool hasError() const { return error_; }
     const std::string& errorMessage() const { return error_message_; }
     const CSCPartialResultPathCounters& counters() const { return counters_; }
+    const CSCHostReadbackCounters& readbackCounters() const {
+        return readback_counters_;
+    }
     const CSCPartialResultPathConfig& config() const { return config_; }
     uint32_t globalBGCount() const { return bg_.size(); }
     uint64_t currentCycle() const { return cycle_; }
@@ -114,12 +161,18 @@ class CSCPartialResultPath final : public CSCBGAOutputDestination {
     uint32_t inflightWriteCount(uint32_t) const;
     uint32_t residentBurstCount(uint32_t) const;
     uint32_t reservedBufferSlots(uint32_t) const;
+    uint32_t readInflightBufferSlots(uint32_t) const;
+    uint32_t reservedHostReturnSlots() const {
+        return reserved_host_return_slots_;
+    }
+    uint32_t hostReturnQueueSize() const { return host_return_queue_.size(); }
     const CSCPartialResultBurst& residentBurst(uint32_t, uint32_t) const;
     const std::vector<CSCPartialResultWriteTrace>& writeTrace() const {
         return write_trace_;
     }
 
   private:
+    friend struct CSCM7BHostReadbackTestAccess;
     struct InflightWrite {
         CSCPartialResultBurst burst{};
         uint32_t buffer_slot = 0;
@@ -136,7 +189,18 @@ class CSCPartialResultPath final : public CSCBGAOutputDestination {
         std::deque<InflightWrite> inflight;
         std::vector<std::optional<CSCPartialResultBurst>> resident;
         std::vector<bool> buffer_reserved;
+        std::vector<bool> read_inflight;
         uint32_t reserved_buffer_slots = 0;
+        uint64_t next_read_burst_sequence = 1;
+    };
+    struct ReadTransaction {
+        CSCPartialResultBurst burst{};
+        uint32_t buffer_slot = 0;
+        uint32_t channel_id = 0;
+        uint32_t rank_id = 0;
+        uint32_t local_bg_id = 0;
+        uint64_t issue_cycle = 0;
+        uint64_t completion_cycle = 0;
     };
 
     void fail(const std::string&) noexcept;
@@ -146,6 +210,13 @@ class CSCPartialResultPath final : public CSCBGAOutputDestination {
     void flushEligibleTails(const std::vector<bool>& final_drain_complete);
     void issueWrites();
     void updateCompletion();
+    void stepHostReadback();
+    void completeReads();
+    void issueReads();
+    void updateReadTransportCompletion();
+    bool findReadCandidate(uint32_t global_bg, uint32_t& slot) const;
+    uint64_t totalInflightReads() const;
+    bool readbackConservationInvariant() const;
     uint32_t freeBufferSlot(uint32_t) const;
     uint64_t totalInflightWrites() const;
     bool conservationInvariant() const;
@@ -158,6 +229,11 @@ class CSCPartialResultPath final : public CSCBGAOutputDestination {
     std::vector<uint32_t> rank_rr_cursor_;
     std::optional<CSCBGAOutputPortValue> reservation_;
     CSCPartialResultPathCounters counters_{};
+    CSCHostReadbackCounters readback_counters_{};
+    std::vector<std::deque<ReadTransaction>> inflight_reads_by_channel_;
+    std::vector<uint32_t> channel_read_rr_cursor_;
+    std::deque<CSCHostReturnedBurst> host_return_queue_;
+    uint32_t reserved_host_return_slots_ = 0;
     std::vector<CSCPartialResultWriteTrace> write_trace_;
     uint64_t write_trace_capacity_ = 0;
     bool error_ = false;
