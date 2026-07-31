@@ -3,6 +3,7 @@
 
 #include "BGTargetedOperation.h"
 #include "PIMBlock.h"
+#include "csc/CSCBGAIntegration.h"
 #include "csc/CSCRequestTracker.h"
 #include "csc/CSCTypes.h"
 
@@ -70,6 +71,8 @@ class CSCDescriptorEngine {
     void flush();
     void flushIncomplete();
     void reset();
+    void configureBGAIntegration(const CSCBGAIntegrationConfig&,
+                                 CSCBGAProducerCallbacks);
     bool onRequestComplete(unsigned, uint64_t, uint64_t);
     bool onRequestComplete(unsigned, const DRAMSim::RequestToken&, uint64_t);
 
@@ -89,6 +92,11 @@ class CSCDescriptorEngine {
     uint32_t globalBG() const { return global_bg_id_; }
     uint64_t maximumOutstanding() const { return maximum_outstanding_; }
     uint64_t progressEpoch() const { return progress_epoch_; }
+    bool bgaIntegrationEnabled() const { return bga_config_.enabled; }
+    const CSCBGAIntegrationConfig& bgaIntegrationConfig() const {
+        return bga_config_;
+    }
+    uint64_t nextBGASequence() const { return next_bga_sequence_; }
 
   private:
     friend struct CSCFreezeTestAccess;
@@ -112,6 +120,7 @@ class CSCDescriptorEngine {
     uint32_t valid_count_ = 0, chunk_index_ = 0;
     uint64_t local_sequence_ = 0, maximum_outstanding_ = 0;
     uint64_t progress_epoch_ = 0;
+    uint64_t next_bga_sequence_ = 1;
     CSCDescriptor current_{};
     float x_j_ = 0;
     std::array<uint8_t, 32> value_staging_{}, index_staging_{};
@@ -137,6 +146,9 @@ class CSCDescriptorEngine {
     CSCError error_code_ = CSCError::NONE;
     std::string error_;
     CSCEngineCounters counters_;
+    CSCBGAIntegrationConfig bga_config_{};
+    CSCBGAProducerCallbacks bga_producer_callbacks_{};
+    bool bga_configuration_locked_ = false;
 };
 
 struct CSCExecutionCounters : CSCEngineCounters {
@@ -180,6 +192,9 @@ class CSCNativeExecution {
         CSCSchedulingPolicy scheduling_policy = CSCSchedulingPolicy::BG_DECOUPLED);
     ~CSCNativeExecution();
     void launch(const std::array<CSCBGImageView, 64>&, uint32_t, uint64_t);
+    void configureBGAIntegration(const CSCBGAIntegrationConfig&,
+                                 CSCBGAProducerCallbacks,
+                                 CSCBGAOutputPortCallbacks);
     void tick();
     bool busy() const;
     bool done() const { return isTerminal(); }
@@ -247,6 +262,9 @@ class CSCNativeExecution {
     CSCExecutionCounters execution_stats_;
     std::array<uint64_t, 64> submit_reject_budget_{};
     std::array<CSCResultStatus, 64> result_status_{};
+    CSCBGAIntegrationConfig bga_config_{};
+    CSCBGAOutputPortCallbacks bga_output_callbacks_{};
+    bool bga_configuration_locked_ = false;
 };
 
 }  // namespace csc_descriptor
