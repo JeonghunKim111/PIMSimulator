@@ -7,6 +7,7 @@
   [3. Setup](#3-setup)  
   [4. Programming Guide](#4-programming-guide)  
   [5. SparsePIM Analytical Model Extension](#5-sparsepim-analytical-model-extension)
+  [6. CSC M7 SpMV](#6-csc-m7-spmv)
 
 ## 1. Overview
 
@@ -544,6 +545,47 @@ The v6 structural model keeps v5 padding exposure and separates BGA accumulation
 into raw, hidden, and exposed cycles. Its first full-suite run improves GMean
 model speedup from v5 `1.477x` to v6 `1.809x`, while the rounded paper-target
 GMean is `2.197x`.
+
+## 6. CSC M7 SpMV
+
+The M7 CSC path models descriptor-driven PIM multiplication, bank-group-local
+associative accumulation, bounded partial-result writeback, host readback, and
+deterministic indexed FP32 reduction into the final output vector.
+
+The repository includes the image preprocessor needed to run this path from a
+sparse matrix; a separate SparsePIM checkout is not required. Input matrices
+use the text CSC format described in
+[`tools/csc_light_preprocess/README.md`](tools/csc_light_preprocess/README.md).
+
+First build PIMSimulator:
+
+```bash
+scons
+```
+
+Generate a physical image from the included toy matrix:
+
+```bash
+python3 tools/csc_light_preprocess/csc_light_preprocess.py \
+  --matrix tools/csc_light_preprocess/testdata/toy_csc.txt \
+  --layout csc_aligned --policy round_robin --segment-nnz 0 \
+  --warmup 0 --repeat 1 --no-csv \
+  --export-image /tmp/csc_toy_image
+```
+
+Run the observable M7 end-to-end test:
+
+```bash
+CSC_EXTERNAL_IMAGE=/tmp/csc_toy_image \
+  ./sim --gtest_filter=CSCM7BFullRunTest.ExternalToyPrintsFullCycleBreakdown
+```
+
+The export directory must be absent or empty because the preprocessor does not
+overwrite an existing image. Replace the toy `--matrix` path with another
+matrix in the same format for other workloads. See
+[`docs/csc/CSC_IMAGE_FORMAT.md`](docs/csc/CSC_IMAGE_FORMAT.md) for the binary
+contract and [`docs/csc/M7B_IMPLEMENTATION_AND_TOY_RESULTS.txt`](docs/csc/M7B_IMPLEMENTATION_AND_TOY_RESULTS.txt)
+for the implemented pipeline and recorded toy result.
 
 ### Contact
 * Shin-haeng Kang (s-h.kang@samsung.com)
