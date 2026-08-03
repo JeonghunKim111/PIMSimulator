@@ -2,12 +2,13 @@
 
 ## Contents
 
-  [1. Overview](#1-overview)  
-  [2. HW Description](#2-hw-description)  
-  [3. Setup](#3-setup)  
-  [4. Programming Guide](#4-programming-guide)  
-  [5. SparsePIM Analytical Model Extension](#5-sparsepim-analytical-model-extension)
-  [6. CSC M7 SpMV](#6-csc-m7-spmv)
+- [1. Overview](#1-overview)
+- [2. HW Description](#2-hw-description)
+- [3. Setup](#3-setup)
+- [4. Programming Guide](#4-programming-guide)
+- [5. SparsePIM Analytical Model Extension](#5-sparsepim-analytical-model-extension)
+- [6. Running CSC M7 SpMV](#6-running-csc-m7-spmv)
+- [7. CSC M7 Dataflow and Data Format](#7-csc-m7-dataflow-and-data-format)
 
 ## 1. Overview
 
@@ -546,7 +547,7 @@ into raw, hidden, and exposed cycles. Its first full-suite run improves GMean
 model speedup from v5 `1.477x` to v6 `1.809x`, while the rounded paper-target
 GMean is `2.197x`.
 
-## 6. CSC M7 SpMV
+## 6. Running CSC M7 SpMV
 
 The M7 CSC path models descriptor-driven PIM multiplication, bank-group-local
 associative accumulation, bounded partial-result writeback, host readback, and
@@ -557,11 +558,36 @@ sparse matrix; a separate SparsePIM checkout is not required. Input matrices
 use the text CSC format described in
 [`tools/csc_light_preprocess/README.md`](tools/csc_light_preprocess/README.md).
 
-First build PIMSimulator:
+### 6.1 Requirements and build
+
+Install SCons, GoogleTest, Python 3 with NumPy, and a C++17 compiler with
+OpenMP support. On Ubuntu, build the simulator from the repository root with:
 
 ```bash
 scons
 ```
+
+The preprocessor's C++ helper is compiled automatically on first use. It can
+also be built explicitly with `make -C tools/csc_light_preprocess`.
+
+### 6.2 Input matrix
+
+The preprocessor accepts a headerless sparse triplet file in CSC column order.
+Each line contains:
+
+```text
+<zero-based row> <zero-based column> <floating-point value>
+```
+
+Column indices must be nondecreasing; row order inside a column is preserved.
+The parser infers dimensions from the largest indices and constructs
+conventional `col_ptr`, `row_idx`, and FP64 `values` arrays internally. Inputs
+whose dimensions depend on trailing completely empty rows or columns need an
+explicit nonzero representation or conversion before using this loader. See
+[`tools/csc_light_preprocess/testdata/toy_csc.txt`](tools/csc_light_preprocess/testdata/toy_csc.txt)
+for a complete example.
+
+### 6.3 Generate an HBM-PIM physical image
 
 Generate a physical image from the included toy matrix:
 
@@ -573,19 +599,208 @@ python3 tools/csc_light_preprocess/csc_light_preprocess.py \
   --export-image /tmp/csc_toy_image
 ```
 
-Run the observable M7 end-to-end test:
+The M7 format requires `--layout csc_aligned`, 64 bank groups, and
+`--segment-nnz 0`. `round_robin` deterministically assigns nonempty columns to
+BGs. The output directory must be absent or empty because image export never
+overwrites existing data. A successful run prints JSON with
+`"verification_passed": true` and creates `manifest.json` plus four files for
+each of the 64 BGs.
+
+For another matrix, replace the `--matrix` and `--export-image` paths. Mapping
+policies `load_only` and `load_similarity` are also available for experiments;
+start with `round_robin` when validating a new input.
+
+### 6.4 Run the HBM-PIM CSC SpMV simulation
+
+Run the observable toy end-to-end test:
 
 ```bash
 CSC_EXTERNAL_IMAGE=/tmp/csc_toy_image \
   ./sim --gtest_filter=CSCM7BFullRunTest.ExternalToyPrintsFullCycleBreakdown
 ```
 
-The export directory must be absent or empty because the preprocessor does not
-overwrite an existing image. Replace the toy `--matrix` path with another
-matrix in the same format for other workloads. See
-[`docs/csc/CSC_IMAGE_FORMAT.md`](docs/csc/CSC_IMAGE_FORMAT.md) for the binary
-contract and [`docs/csc/M7B_IMPLEMENTATION_AND_TOY_RESULTS.txt`](docs/csc/M7B_IMPLEMENTATION_AND_TOY_RESULTS.txt)
-for the implemented pipeline and recorded toy result.
+For a non-toy matrix, use the general full-run test:
+
+```bash
+CSC_EXTERNAL_IMAGE=/tmp/my_csc_image \
+  ./sim --gtest_filter=CSCM7BFullRunTest.ExternalMatrixPrintsFullCycleBreakdown
+```
+
+The test constructs a deterministic FP32 input vector `x`, runs the complete
+descriptor/PIM/BGA/writeback/readback/reduction path, and compares the final
+vector with a CPU FP32 reference. Successful output must report:
+
+```text
+contribution_conservation: PASS
+record_conservation: PASS
+byte_conservation: PASS
+resultValid: PASS
+endToEndSpMVComplete: PASS
+CPU_reference_comparison: PASS
+```
+
+It also prints compute, BGA drain, writeback, readback, host reduction, and
+end-to-end cycle counts. Large matrices can require substantial simulation
+time and resident partial-result capacity, so validate the toy image first and
+then increase workload size gradually.
+
+### 6.5 Reproduction checklist
+
+1. Build `sim` with `scons`.
+2. Convert the matrix to the required text CSC form if necessary.
+3. Export a `csc_aligned` physical image with the bundled preprocessor.
+4. Confirm that preprocessing reports `verification_passed: true`.
+5. Set `CSC_EXTERNAL_IMAGE` to the exported image directory.
+6. Run the toy or general M7B full-run GoogleTest.
+7. Check final-result correctness and all three conservation chains.
+
+## 7. CSC M7 Dataflow and Data Format
+
+### 7.1 End-to-end dataflow
+
+```text
+Host text CSC matrix
+        |
+        v
+CSC image preprocessor
+  column-to-BG mapping, FP64-to-FP32 conversion,
+  32-byte alignment, descriptor and x-slot generation
+        |
+        v
+64 authoritative BG-local physical images
+        |
+        v
+CSC descriptor engine
+  load x scalar -> read value/index chunk -> masked FP32 MUL
+        |
+        v
+One associative BGA per global bank group
+  indexed accumulation by row -> eviction/final-drain partials
+        |
+        v
+8-byte partial records: { uint32 row_idx, float32 value }
+        |
+        v
+Per-BG 32-byte burst packer (4 records per full burst)
+        |
+        v
+Bounded partial-result writeback -> resident burst buffers
+        |
+        v
+POST_WRITEBACK host readback -> bounded return queue
+        |
+        v
+Deterministic indexed FP32 host reduction
+        |
+        v
+Authoritative final y / resultValid()
+```
+
+Each nonempty input column is owned by exactly one global BG. Its descriptor
+identifies the BG-local value and row-index streams and the corresponding
+input-vector `x` slot. A descriptor is processed in chunks of eight NNZs, the
+native SIMD width. Tail chunks mask inactive lanes, so padding never executes
+a multiply or creates a partial result.
+
+Products are accumulated by row in the owning BG's bounded associative Bank
+Group Accumulator (BGA). BGA capacity eviction and final drain emit physical
+partial records. Backpressure is propagated through bounded queues rather than
+using an unbounded result container.
+
+M7 uses `POST_WRITEBACK` readback: host reads begin only after all BGA outputs
+have been packed, written, and made resident. Returned records are reduced in a
+stable host-visible order using an FP32 addition for every record. The host
+reduction, rather than a validation shadow or CPU reference, is the
+authoritative final output.
+
+### 7.2 Input and logical CSC representation
+
+The input is the column-ordered `row column value` triplet form described in
+Section 6.2. During preprocessing it becomes conventional compressed sparse
+column arrays:
+
+| Array | Type | Entries | Meaning |
+|---|---|---:|---|
+| `col_ptr` | integer | `num_columns + 1` | Start/end positions of each column |
+| `row_idx` | integer | `nnz` | Zero-based output row for each nonzero |
+| `values` | floating point | `nnz` | Nonzero matrix values |
+
+For column `c`, entries occupy `[col_ptr[c], col_ptr[c + 1])`. SpMV computes
+`y[row_idx[k]] += values[k] * x[c]` for each entry in that interval.
+
+### 7.3 Physical BG-partitioned image
+
+The preprocessor converts the logical CSC arrays into a directory containing:
+
+```text
+manifest.json
+bg_00_values.bin
+bg_00_row_idx.bin
+bg_00_descriptors.bin
+bg_00_x_permutation.bin
+...
+bg_63_values.bin
+bg_63_row_idx.bin
+bg_63_descriptors.bin
+bg_63_x_permutation.bin
+```
+
+Version 1 of the image contract uses little-endian encoding, 64 global BGs,
+eight FP32 SIMD lanes, 32-byte bursts/alignment, FP32 values, and `uint32` row
+indices. Each BG has independent value and row-index streams. Every nonempty
+column begins on a 32-byte boundary and is padded to the next boundary. Padding
+is zero-filled physical storage and is not counted as an NNZ.
+
+Each descriptor is exactly 32 bytes:
+
+| Byte offset | Size | Field |
+|---:|---:|---|
+| 0 | 8 | BG-local value-stream byte offset |
+| 8 | 8 | BG-local row-index-stream byte offset |
+| 16 | 4 | Column NNZ count |
+| 20 | 4 | BG-local `x` slot |
+| 24 | 4 | Original matrix column |
+| 28 | 4 | Global BG ID |
+
+The offsets are BG-local stream offsets, not absolute HBM addresses.
+PIMSimulator combines the global BG ID and local offset with the configured
+Scheme8 channel/rank/BG/bank topology to generate physical requests. Values,
+row indices, and packed `x` use separate bank/base-row regions; M7 partial
+results then follow the modeled writeback/readback path described above.
+
+`manifest.json` records dimensions, mapping policy, per-BG sizes and counts,
+column ownership, conversion statistics, and FNV-1a checksums. The simulator
+validates all sizes, checksums, alignment, descriptor ownership, x-slot
+permutations, row ranges, and total NNZ before execution.
+
+### 7.4 Partial-result and completion contracts
+
+A BGA output is serialized as one 8-byte architectural record:
+
+| Field | Type | Bytes |
+|---|---|---:|
+| `row_idx` | `uint32` | 4 |
+| `value` | IEEE-754 `float32` | 4 |
+
+Four records form a full 32-byte writeback burst. A BG's final one to three
+records form one zero-padded 32-byte tail burst. Simulator-only ownership and
+sequence metadata is not counted as transferred payload.
+
+Production completion requires compute submission, BGA drain, partial
+writeback, host readback, host reduction, and all conservation checks to finish
+without a sticky error. The expected invariants are:
+
+```text
+matrix NNZ = accepted contributions = reduced contributions
+BGA records = packed records = readback records = reduced records
+write useful + padding bytes = write transferred bytes
+read useful + padding bytes  = read transferred bytes
+```
+
+The complete binary contract is in
+[`docs/csc/CSC_IMAGE_FORMAT.md`](docs/csc/CSC_IMAGE_FORMAT.md). Implementation
+details and the recorded toy timeline are in
+[`docs/csc/M7B_IMPLEMENTATION_AND_TOY_RESULTS.txt`](docs/csc/M7B_IMPLEMENTATION_AND_TOY_RESULTS.txt).
 
 ### Contact
 * Shin-haeng Kang (s-h.kang@samsung.com)

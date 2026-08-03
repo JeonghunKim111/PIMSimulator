@@ -3,7 +3,7 @@
 ## Scope
 
 This document defines the versioned binary contract between
-`SparsePIM/csc_light_preprocess` and PIMSimulator's
+`tools/csc_light_preprocess` and PIMSimulator's
 `external_physical_image` input. The preprocessor output is the authoritative
 BG-local physical byte image. PIMSimulator validates and consumes it without
 recomputing mapping, column order, alignment, descriptors, x slots, or stream

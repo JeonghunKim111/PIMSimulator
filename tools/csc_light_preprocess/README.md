@@ -5,19 +5,23 @@ path. It converts a sparse matrix stored in the repository's text CSC format
 into the physical, column-aligned image consumed by PIMSimulator. No checkout
 of the separate SparsePIM repository is required.
 
-The input text format is:
+The input is a headerless sparse triplet file in CSC column order. Each line is:
 
-1. `num_rows num_columns nnz`
-2. `num_columns + 1` integer column pointers
-3. `nnz` integer row indices
-4. `nnz` floating-point values
+```text
+<zero-based row> <zero-based column> <floating-point value>
+```
+
+Column indices must be nondecreasing. The loader preserves row order within a
+column, infers matrix dimensions from the largest indices, and constructs
+conventional CSC arrays internally. Consequently, trailing completely empty
+rows or columns are not represented by this headerless format.
 
 See `testdata/toy_csc.txt` for a minimal example. The physical image contract
 is documented in [`../../docs/csc/CSC_IMAGE_FORMAT.md`](../../docs/csc/CSC_IMAGE_FORMAT.md).
 
 ## Requirements
 
-- Python 3
+- Python 3 with NumPy
 - A C++17 compiler with OpenMP support (the default is `g++`)
 
 The Python entry point builds `csc_light_preprocess_bin` on demand. It can also
