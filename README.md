@@ -9,6 +9,7 @@
 - [5. SparsePIM Analytical Model Extension](#5-sparsepim-analytical-model-extension)
 - [6. Running CSC M7 SpMV](#6-running-csc-m7-spmv)
 - [7. CSC M7 Dataflow and Data Format](#7-csc-m7-dataflow-and-data-format)
+- [8. Hardware Added for CSC SpMV](#8-hardware-added-for-csc-spmv)
 
 ## 1. Overview
 
@@ -801,6 +802,191 @@ The complete binary contract is in
 [`docs/csc/CSC_IMAGE_FORMAT.md`](docs/csc/CSC_IMAGE_FORMAT.md). Implementation
 details and the recorded toy timeline are in
 [`docs/csc/M7B_IMPLEMENTATION_AND_TOY_RESULTS.txt`](docs/csc/M7B_IMPLEMENTATION_AND_TOY_RESULTS.txt).
+
+## 8. Hardware Added for CSC SpMV
+
+### 8.1 Design objective and baseline topology
+
+The original PIMSimulator provides HBM2 channels, ranks, banks, and programmable
+SIMD PIM blocks, but its legacy PIM commands operate at rank-wide granularity
+and do not provide indexed sparse accumulation. The CSC extension preserves
+that datapath and adds control, accumulation, and result-transport structures
+needed to execute independently partitioned sparse columns.
+
+The production CSC configuration has 16 channels, one rank per channel, four
+bank groups per rank, 16 banks per rank, and eight PIM blocks per rank. Two
+physical PIM blocks belong to each local BG:
+
+| Local BG | PIM blocks | Banks |
+|---:|---|---|
+| 0 | 0, 1 | 0-3 |
+| 1 | 2, 3 | 4-7 |
+| 2 | 4, 5 | 8-11 |
+| 3 | 6, 7 | 12-15 |
+
+Thus the complete simulated system exposes 64 global BG execution domains.
+Global BG `g` maps to channel `g / 4`, rank 0, and local BG `g % 4`. The
+topology is checked at construction; unsupported bank/PIM-block organizations
+are rejected rather than silently remapped.
+
+### 8.2 Added hardware-model components
+
+| Component | Placement/scope | Function |
+|---|---|---|
+| CSC descriptor engine | One logical worker per global BG | Sequences descriptor fetch, `x`, value and index reads, chunks columns into eight lanes, and tracks request completion |
+| BG-targeted operation interface | Descriptor engine to `PIMRank` | Carries destination BG, PIM-block mask, operands, valid-lane count, sequence and generation identity |
+| Rank-local targeted arbiter | One per rank | Grants at most one ready BG operation per rank per cycle using deterministic round robin and shared-resource checks |
+| Masked SIMD execution | Existing physical `PIMBlock` datapath | Executes FP32 multiplication only for the valid lanes of full or tail chunks |
+| Bank Group Accumulator (BGA) | One independent instance per global BG | Associatively merges products with equal row indices and emits capacity-eviction or final-drain partials |
+| Stable BGA output port | One per BGA | Holds the front output until a bounded downstream destination reserves and accepts it |
+| Partial-result packer | One per global BG | Packs four 8-byte indexed partials into each 32-byte writeback burst and creates final tail bursts |
+| Writeback transaction model | Rank-arbitrated, BG-resident storage | Models bounded pending/in-flight writes, latency, buffer reservation, and resident burst ownership |
+| Host readback model | Channel-arbitrated | Models bounded read issue, read latency, in-flight limits, and a bounded host return queue |
+| Host FP32 reduction model | Host side | Deterministically accumulates returned indexed records into the authoritative final vector |
+
+### 8.3 Descriptor-driven sparse execution control
+
+`CSCDescriptorEngine` is the new sparse-operation controller. For each owned
+column it loads one scalar `x[col]`, then requests aligned value and row-index
+bursts. Each 32-byte chunk supplies up to eight FP32 values and eight `uint32`
+row indices. The engine creates a `MASKED_MUL` operation only after both
+operands are ready.
+
+The controller tracks each memory request and targeted operation with explicit
+owner, kind, sequence, and generation fields. It rejects unknown, stale,
+duplicate, or incorrectly routed completions. Different BG engines advance
+independently under the `BG_DECOUPLED` scheduling policy; a stalled BG does not
+form a global descriptor barrier.
+
+The primary state sequence is:
+
+```text
+FETCH_DESCRIPTOR -> LOAD_X -> FETCH_VALUE/FETCH_ROW_INDEX
+ -> WAIT_OPERANDS -> SIMD_MUL
+ -> WAIT_TARGET_GRANT -> WAIT_TARGET_COMPLETION
+ -> EMIT_PARTIALS -> ADVANCE_CHUNK/NEXT_DESCRIPTOR
+```
+
+### 8.4 BG-targeted PIM execution
+
+The extension adds a BG-targeted execution mode to `PIMRank`. A targeted
+operation identifies the channel, rank, local BG, selected PIM block, opcode,
+valid lane count, and exactly-once identity. This avoids broadcasting every CSC
+chunk to all PIM blocks in a rank.
+
+Each rank owns one depth-one pending slot and one active-operation slot per
+local BG. A round-robin arbiter scans ready BGs and grants at most one operation
+per rank per cycle. It observes command-bus use, data-bus occupancy, PIM-block
+busy masks, BG lifecycle, and rank execution mode. An ineligible BG can be
+skipped so another ready BG can proceed.
+
+Legacy rank-wide and CSC BG-targeted execution are mutually exclusive within a
+rank. Mode changes pass through a drain state, which prevents legacy and CSC
+commands from owning the same physical datapath simultaneously. A targeted
+multiply completes no earlier than the cycle after grant.
+
+### 8.5 Masked FP32 SIMD support
+
+CSC columns are processed with the existing eight-lane PIM SIMD datapath. The
+extension provides a single `valid_count` contract for masked `MUL` operations:
+
+- Full chunks execute all eight lanes.
+- Tail chunks execute only lanes `[0, valid_count)`.
+- Inactive lanes do not read operands, perform arithmetic, modify destination
+  state, or emit partials.
+- The completed physical PIM-block result is the only source used to construct
+  BGA input partials.
+
+This preserves the PIM block as the production arithmetic endpoint while
+preventing 32-byte alignment padding from becoming sparse work.
+
+### 8.6 Bank Group Accumulator
+
+Each global BG owns a bounded associative BGA containing tagged entries of:
+
+```text
+valid, reserved, row_idx, FP32 value, insertion age,
+generation, source stream, contribution count
+```
+
+For every incoming `{row_idx, value}` partial, the BGA compares the row tag
+against its valid entries. A hit performs an ordered FP32 merge. A miss inserts
+into a free entry; if the structure is full, a deterministic victim is emitted
+before the new row is inserted. After the descriptor producer finishes, final
+drain emits all remaining valid entries.
+
+The BGA explicitly models input queues, tag-comparison width and latency, FP32
+add latency, accumulator capacity, an output queue, lookup/merge/insert
+operations, and downstream stalls. Input batches and outputs carry generation
+and sequence identities so retry or backpressure cannot duplicate a
+contribution.
+
+The configuration is parameterized through `CSCBGAConfig`. Defaults are 16
+input-queue entries, 16 accumulator entries, compare width 16, one-cycle
+compare, one-cycle add, and 16 output-queue entries. The observable full-run
+test deliberately uses four accumulator entries and a four-entry output queue
+as a small bounded configuration; dedicated BGA tests exercise capacity
+eviction and pressure. These values are simulator configuration choices, not
+fixed silicon dimensions.
+
+### 8.7 Partial-result writeback and host return path
+
+The BGA output destination implements a reserve/accept/commit protocol. If the
+destination lacks capacity, the BGA front record remains stable and the stall
+propagates upstream. Once accepted, each `{uint32 row_idx, float32 value}` record
+enters its BG-local four-record packer.
+
+The modeled result path adds:
+
+- bounded pending write-burst queues per BG;
+- configurable write latency and in-flight limits;
+- deterministic rank-local write arbitration;
+- topology-sized resident burst buffers with reservation at write issue;
+- configurable read latency and per-channel in-flight limits;
+- deterministic channel-local read arbitration;
+- a bounded host return queue with capacity reserved at read issue; and
+- a bounded FP32 reduction queue with configurable issue width and latency.
+
+The full-run configuration uses two pending bursts per BG, one in-flight write
+per BG, one write issue per rank per cycle, two-cycle write latency, one read
+issue and one in-flight read per channel, three-cycle read latency, a two-burst
+host return queue, and a four-record reduction queue. The general matrix test
+sizes resident capacity from the maximum per-BG NNZ requirement before launch.
+
+### 8.8 Lifecycle, backpressure, and observability
+
+Every BG has independent run, flush, drain, error-drain, error, and reset
+states. Accepted work drains normally; it is never force-deleted. Errors are
+sticky and prevent completion or result validity. Backpressure can propagate
+from host reduction through return queues, resident buffers, write packers,
+BGA output, and finally the descriptor engine.
+
+Hardware-model counters expose per-BG ready/executing/wait/grant cycles,
+targeted operations, BGA lookup/merge/eviction behavior, write/read traffic,
+queue occupancy, stalls, reduction activity, and phase-completion cycles. The
+end-to-end completion predicate requires every hardware-model stage and all
+record/contribution/byte conservation checks to agree.
+
+### 8.9 Modeling boundary
+
+The extension is a cycle-stepped architectural model, but not every component
+is claimed as a fabricated hardware block. In particular:
+
+- BGA, BG-targeted execution, bounded queues, arbitration, latency, ownership,
+  and backpressure are explicitly modeled.
+- Partial-result writeback models transaction timing and resident ownership; it
+  does not persist payloads in a physical DRAM cell array.
+- Final indexed reduction is currently a deterministic host-side FP32 model,
+  not a logic-die Global Accumulator.
+- TSV/internal-bus timing, CPU instruction timing, streaming readback, a
+  hardware Global Accumulator, and the complete SparsePIM+ architecture are not
+  implemented.
+
+Relevant implementation files are
+[`src/csc/CSCDescriptorEngine.h`](src/csc/CSCDescriptorEngine.h),
+[`src/BGTargetedOperation.h`](src/BGTargetedOperation.h),
+[`src/csc/CSCBankGroupAccumulator.h`](src/csc/CSCBankGroupAccumulator.h), and
+[`src/csc/CSCPartialResultPath.h`](src/csc/CSCPartialResultPath.h).
 
 ### Contact
 * Shin-haeng Kang (s-h.kang@samsung.com)
