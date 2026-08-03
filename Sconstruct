@@ -24,7 +24,8 @@ def getSources(target):
                          Glob(joinpath(base_path["build"], "tests/*.cpp")) +
                          Glob(joinpath(base_path["build"], "tests/csc/*.cpp")))
         if int(en_emul) != 1:
-            build_sources += Glob(joinpath(base_path["tools_build"], "*/*.cpp"))
+            build_sources += Glob(joinpath(base_path["tools_build"],
+                                            "emulator_api/*.cpp"))
         sources = build_sources
     elif (target == "lib"):
         lib_sources = Glob(joinpath(base_path["build"], "*.cpp"))
