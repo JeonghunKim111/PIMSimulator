@@ -1,10 +1,23 @@
-# CSC M7 FP16 representation and timing contract draft
+# CSC M7 FP16 representation and timing contract
 
-## FP32 versus target FP16
+## Current and target paths
 
-| Property | FP32 M7 now | FP16 target |
+Current FP32 M7 ends with indexed partial transport and ordered host reduction:
+
+```text
+FP32 image -> 8-lane MUL -> FP32 BGA
+-> 8-byte indexed partial writeback/readback
+-> ordered host FP32 reduction -> final_y_fp32
+```
+
+The FP16 target preserves that architecture. There is no current logic-die GA,
+GA arbitration, GA accumulator, or dense PIM-side final-y writeback.
+
+## FP32 versus FP16 representation
+
+| Property | FP32 v1 | FP16 v2 / future execution |
 |---|---:|---:|
-| burst/alignment | 32 B | 32 B |
+| burst and column alignment | 32 B | 32 B |
 | matrix value bytes | 4 | 2 |
 | values per burst | 8 | 16 |
 | row-index bytes | 4 | 4 |
@@ -13,98 +26,77 @@
 | x elements per burst | 8 | 16 |
 | descriptor bytes | 32 | 32 |
 
-The key M3 change is asymmetric operand fetch. For a 16-NZE chunk:
+M2 implements only the v2 representation. Production execution remains v1.
+
+## Implemented FP16 image v2
+
+Each nonempty column has independently 32-byte-aligned value and row-index
+allocations:
 
 ```text
-value requests = 1
-index requests = ceil(chunk_nnz/8) = 1 or 2
+value allocation = align32(2 * nnz_column)
+index allocation = align32(4 * nnz_column)
 ```
 
-| chunk NNZ | value bursts | index bursts | valid index halves |
-|---:|---:|---:|---|
-| 1-8 | 1 | 1 | low only |
-| 9-16 | 1 | 2 | low and high |
+Per BG files are `bg_NN_values_fp16.bin`, `bg_NN_row_idx_u32.bin`,
+`bg_NN_descriptors.bin`, and `bg_NN_x_permutation.bin`. `x_fp16.bin` stores the
+complete original x in FP16 and is padded once to 32 bytes. The permutation
+stream preserves the existing descriptor `x_slot -> original_col` contract.
+All integer and FP16-bit fields are explicitly little-endian.
 
-## Required descriptor/request state
+The descriptor remains the existing 32-byte integer layout. M2 changes no
+descriptor field or production parser. Logical, physical, and padding bytes
+for values, indices, and x are separate manifest counters. This exposes the
+case where short columns consume the same 32-byte physical allocation in FP32
+and FP16.
 
-The current single `chunk_offset_` and one `index_slot_` are insufficient.
-M3 needs independent logical value and row-index offsets plus readiness for
-two index bursts:
+## M3 request asymmetry
+
+A future 16-NZE chunk requires one value request and one or two index requests:
+
+| chunk NNZ | value bursts | index bursts |
+|---:|---:|---:|
+| 1-8 | 1 | 1 |
+| 9-16 | 1 | 2 |
+
+The future tracker needs independent value/index offsets, two index-completion
+states, a 16-bit valid mask, and `chunk_nnz=min(remaining_nnz,16)`. None of
+these production changes are part of M1/M2.
+
+## Producer and BGA policy
+
+M3/M4 will preserve the current PIM-block scheduling policy initially. One
+selected block can produce up to 16 FP16 partials per operation; a later
+two-block concurrent policy would raise the peak to 32 and is a separate
+decision. BGA capacity remains iso-entry-count with FP32. Increasing producer
+width must create modeled backpressure rather than an implicit BGA throughput
+increase.
+
+## Indexed partial transport decision
+
+The future FP16 record is fixed at eight bytes:
 
 ```text
-remaining_nnz
-chunk_nnz=min(remaining_nnz,16)
-value_offset
-row_index_offset
-required_index_bursts=ceil(chunk_nnz/8)
-value_ready
-index_low_ready
-index_high_ready
-valid_count
-valid_mask[16]
+offset 0: uint32 row_idx
+offset 4: uint16 fp16_value_bits
+offset 6: uint16 reserved (zero)
 ```
 
-Request identity must distinguish both index completions. The engine may issue
-the value and required index requests concurrently under the existing
-overlapped policy, but compute cannot trigger until every required operand is
-ready. Row-index lane order is low burst lanes 0-7 followed by high burst lanes
-8-15. Tail lanes must never be decoded, multiplied, or enqueued.
+Four records occupy one 32-byte burst, preserving current packing geometry.
+A six-byte packed record is not part of the base implementation and may only
+be considered as a later sensitivity study. M1/M2 do not change production
+partial serialization or ordered host reduction.
 
-## Producer-rate impact
+## Timing and traffic principles
 
-The current descriptor targets only `kBGTargetFirstPIMBlock` for each masked
-MUL, so production M7 does not presently emit 16 FP32 partials per BG cycle.
-With target FP16, one selected PIM block can materialize up to 16 partials per
-operation. If a later policy uses both PIM blocks in a BG concurrently, the
-peak becomes 32 partials/BG event. That dual-block rate is a future policy, not
-a current baseline fact.
+- FP16 does not by itself reduce MUL/ADD latency.
+- Gains may come from fewer value chunks and denser x storage.
+- Row-index and descriptor bytes do not shrink.
+- The second index request for 9-16 NZE participates in bus use and readiness.
+- Per-column 32-byte alignment can hide logical value-byte savings.
+- Wider partial production and BGA backpressure must be modeled explicitly.
 
-Keeping BGA input queue depth, comparison width, add latency, and output queue
-entry count fixed can increase compute-to-BGA backpressure. Timing must reflect
-that pressure; FP16 does not imply a free BGA throughput increase.
-
-## Partial transport choice
-
-Current transport is an 8-byte record:
-
-```text
-uint32 row_idx
-float value
-```
-
-The logical FP16 payload is six bytes, but two physical contracts remain:
-
-- 6-byte packed: five records per 32-B burst with two padding bytes, but
-  alignment/serialization and crossing rules become more complex;
-- 8-byte aligned: `uint32 row_idx + uint16 value_bits + uint16 reserved`, four
-  records per burst, preserving the current packer geometry.
-
-The roadmap currently prefers 8-byte aligned BG-to-GA records. This means
-precision alone does not reduce partial-result transport bytes versus current
-M7. The choice must be fixed in M6 and versioned; M0 makes no format change.
-
-## Final-y representation
-
-The target dense y uses 2-byte FP16 elements and packs 16 rows per 32-B burst.
-Current M7 has no modeled dense-y writeback. M7 must define staging of 16
-elements, zero-row initialization, partial-tail behavior, whether a burst is
-written once or updated, and overlap with GA before exact cycles can be frozen.
-
-## Timing principles
-
-- Retain current MUL/ADD latency unless a separately justified hardware model
-  changes it.
-- Do not halve ALU cycles solely because precision is FP16.
-- Cycle gains may arise from fewer value chunks, denser x packing, and dense-y
-  byte reduction.
-- Row-index and descriptor traffic do not shrink.
-- The second index request for 9-16 NZE chunks must consume request/bus
-  resources and participate in readiness/backpressure.
-- Column-local 32-B alignment means short columns may see little or no physical
-  value-byte reduction.
-- BGA/GA producer-consumer pressure and transport arbitration remain explicit.
-
-## Draft FP16 traffic invariants
+The post-M3 invariants remain drafts:
 
 ```text
 value bursts     = sum_columns ceil(nnz_column/16)
@@ -114,17 +106,6 @@ active lanes = generated partials = BGA enqueues = matrix NNZ
 x scalar loads = descriptor count
 ```
 
-Useful logical bytes are `2*NNZ` for matrix values and `4*NNZ` for row indices.
-Physical bytes include independent per-column 32-B alignment. Descriptor bytes
-remain `32*descriptor_count`. Transport and final-y byte invariants remain
-open until M6/M7 formats are approved.
-
-## Boundary cases required by M3
-
-Column NNZ counts `0,1,7,8,9,15,16,17,31,32,33` must verify request counts,
-lane association, independent offsets, tails, and absence of invalid accesses.
-The M0 golden covers `0,1,7,8,9` under FP32 and freezes the pre-change behavior.
-
-No production lane, request, record, or latency setting was changed in this
-draft stage.
-
+The M2 round-trip fixture already covers column sizes
+`0,1,7,8,9,15,16,17,31,32,33`, but no production request count or cycle is
+changed until M3.

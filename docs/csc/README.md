@@ -1,5 +1,11 @@
 # Column-aligned BG-partitioned CSC SpMV milestone 1
 
+FP16 development documents:
+
+- `CSC_FP16_NUMERICAL_CONTRACT_DRAFT.md`
+- `CSC_FP16_REPRESENTATION_TIMING_CONTRACT_DRAFT.md`
+- `CSC_IMAGE_FORMAT_V2_FP16.md`
+
 ## 1. Project goal
 
 This project validates a conventional-CSC-derived sparse SpMV layout and execution model before native BG-local hardware is added to PIMSimulator. It establishes reproducible layout invariants, descriptor/chunk semantics, FP32 correctness, host indexed accumulation, lockstep scheduling statistics, and DRAM traffic phase measurements.
