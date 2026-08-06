@@ -135,6 +135,58 @@ TEST(CSCM7A2CompletionDrainTest, CapacityPressureConsumesEvictionAndFinalDrain) 
     RecordProperty("complete_cycle", execution.cycle());
 }
 
+TEST(CSCM7A2CompletionDrainTest, WideCollectorAcceptsEachBGAtMostOncePerCycle) {
+    auto layout = buildLayout(makeCSC(4, 1,
+        {{0,0,1.0F},{1,0,2.0F},{2,0,3.0F},{3,0,4.0F}}),
+        MappingPolicy::External, {0});
+    Views views(layout, {1.0F});
+    CSCNativeExecution execution;
+    auto c = config(4, CSCBGAOutputConsumerMode::VALIDATION_ROUND_ROBIN,
+                    1, 1);
+    c.validation_consumer_accepts_per_cycle = 64;
+    execution.enableProductionBGAIntegration(c);
+    execution.launch(views.views, 4, 4);
+
+    runUntil(execution, [&] { return execution.bgaExecutionComplete(); });
+
+    EXPECT_FALSE(execution.hasFailed());
+    EXPECT_EQ(execution.bgaValidationCollector().accepted_contributions, 4U);
+    EXPECT_TRUE(execution.bgaValidationSemanticMatches());
+    EXPECT_TRUE(execution.bankGroupAccumulator(0).conservationInvariant());
+}
+
+TEST(CSCM7A2CompletionDrainTest, RejectsValidationWidthAboveGlobalBGCount) {
+    auto c = config(1, CSCBGAOutputConsumerMode::VALIDATION_ROUND_ROBIN);
+    c.validation_consumer_accepts_per_cycle = 65;
+    EXPECT_THROW(c.validate(), std::invalid_argument);
+}
+
+TEST(CSCM7A2CompletionDrainTest, RejectsWritebackWidthAboveGlobalBGCount) {
+    auto c = config(1, CSCBGAOutputConsumerMode::PARTIAL_RESULT_WRITEBACK);
+    c.partial_writeback_accepts_per_cycle = 65;
+    EXPECT_THROW(c.validate(), std::invalid_argument);
+}
+
+TEST(CSCM7A2CompletionDrainTest, SemanticMismatchDoesNotBlockCompletion) {
+    auto layout = buildLayout(makeCSC(1, 1,
+        {{0,0,100000000.0F},{0,0,1.0F},{0,0,-100000000.0F}}),
+        MappingPolicy::External, {0});
+    Views views(layout, {1.0F});
+    CSCNativeExecution execution;
+    auto c = config(1, CSCBGAOutputConsumerMode::VALIDATION_ROUND_ROBIN);
+    c.validation_consumer_accepts_per_cycle = 64;
+    execution.enableProductionBGAIntegration(c);
+    execution.launch(views.views, 1, 3);
+
+    runUntil(execution, [&] { return execution.bgaExecutionComplete(); });
+
+    EXPECT_TRUE(execution.isTerminal());
+    EXPECT_TRUE(execution.isDone());
+    EXPECT_TRUE(execution.bgaDrainComplete());
+    EXPECT_EQ(execution.bgaValidationCollector().accepted_contributions, 3U);
+    EXPECT_FALSE(execution.bgaValidationSemanticMatches());
+}
+
 TEST(CSCM7A2CompletionDrainTest, ExternalPauseBackpressuresOutputThenResumesWithoutLoss) {
     auto layout = buildLayout(makeCSC(4, 1,
         {{0,0,1.0F},{1,0,2.0F},{2,0,3.0F},{3,0,4.0F}}),

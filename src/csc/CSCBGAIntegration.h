@@ -33,6 +33,7 @@ struct CSCBGAIntegrationConfig {
     CSCBGAOutputConsumerMode output_consumer_mode =
         CSCBGAOutputConsumerMode::EXTERNAL;
     uint32_t validation_consumer_accepts_per_cycle = 1;
+    uint32_t partial_writeback_accepts_per_cycle = 1;
 
     void validate() const
     {
@@ -41,8 +42,14 @@ struct CSCBGAIntegrationConfig {
         if (!enabled) return;
         if (output_consumer_mode ==
                 CSCBGAOutputConsumerMode::VALIDATION_ROUND_ROBIN &&
-            !validation_consumer_accepts_per_cycle)
-            throw std::invalid_argument("zero validation consumer width");
+            (!validation_consumer_accepts_per_cycle ||
+             validation_consumer_accepts_per_cycle > kCSCGlobalBGs))
+            throw std::invalid_argument("invalid validation consumer width");
+        if (output_consumer_mode ==
+                CSCBGAOutputConsumerMode::PARTIAL_RESULT_WRITEBACK &&
+            (!partial_writeback_accepts_per_cycle ||
+             partial_writeback_accepts_per_cycle > kCSCGlobalBGs))
+            throw std::invalid_argument("invalid partial writeback consumer width");
         if (accumulator.input_streams != 1 || !accumulator.input_queue_depth ||
             !accumulator.accumulator_entries || !accumulator.compare_width ||
             accumulator.compare_width < accumulator.accumulator_entries ||
