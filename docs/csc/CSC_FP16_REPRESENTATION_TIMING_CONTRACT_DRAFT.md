@@ -138,3 +138,23 @@ cross-chunk duplicate rows, tails, signed zero, subnormal, maximum finite,
 overflow and NaN. It produces 169 bit-exact partial events from 15 value and
 25 index requests. No FP16 BGA, serialized partial transport, or host FP16
 reduction exists yet.
+
+## M4.5 native DRAM timing integration
+
+`CSCFp16NativeExecution` now connects the typed M3 request interface to actual
+`MultiChannelMemorySystem::addTransaction` acceptance, Scheme8 arbitration and
+token callbacks. It preserves tick-at-most-one request attempt per engine and
+the X, VALUE, INDEX_LOW, INDEX_HIGH order. Rejected requests retain identity and
+are not entered into the accepted outstanding table.
+
+DRAMSim completion timing gates image-backed 32-byte payload delivery. The
+outstanding entry, not the address alone, restores kind, BG, descriptor, chunk
+and offset. Native tick order follows FP32: memory update/callback, global cycle
+increment, then descriptor-engine tick. Synthetic and native raw partial traces
+must be identical before native timing is valid.
+
+The M4.5 compute-only scope begins at launch and ends only after all descriptor
+engines are DONE, all accepted reads have completed and all generated events
+have passed the bounded capture handshake. It includes actual operand request
+queueing, response latency, operand wait and capture stalls. It still excludes
+descriptor DRAM fetch, FP16 BGA, partial transport, readback and host reduction.
