@@ -28,6 +28,12 @@ The validation output consumer width is configurable with
 must set the value explicitly (normally 1); this controls only BGA-output
 collection bandwidth, not BGA ingress, compare width, or internal service.
 
+`CSC_FP16_BGA_CAPACITY` selects a capacity sensitivity while preserving the
+8-entry atomic ingress and one-entry-per-cycle internal service. It sets input
+queue, accumulator, compare, and output queue entry counts together. The
+default is 16; `64` selects `FP16_BATCH8_Q64`. Q64 is a sensitivity result, not
+the main FP16 production preset.
+
 ## External image and result-region preflight
 
 `runFp16M7` accepts a verified `CSCFp16ExecutionImage`; v2 manifest, precision,

@@ -74,6 +74,7 @@ TEST(CSCFp16M7ExternalTest, OptInBGAValidationReportsCycles)
     const char* accepts=getenv("CSC_BGA_VALIDATION_ACCEPTS_PER_CYCLE");
     std::cout<<"FP16_BGA_VALIDATION"
              <<" image="<<path
+             <<" bga_config="<<result.configuration_preset
              <<" validation_accepts_per_cycle="<<(accepts?accepts:"64")
              <<" compute_complete_cycle="<<*result.compute_complete_cycle
              <<" bga_complete_cycle="<<*result.bga_complete_cycle
@@ -120,4 +121,15 @@ TEST(CSCFp16M7ModeTest, ValidationAcceptWidthIsConfigurable)
     EXPECT_EQ(one.final_y_bits,wide.final_y_bits);
     EXPECT_EQ(one.bga_output_hash,wide.bga_output_hash);
     EXPECT_GE(*one.bga_complete_cycle,*wide.bga_complete_cycle);
+}
+
+TEST(CSCFp16M7ModeTest, BGAQ64SensitivityKeepsBatchWidthEight)
+{
+    Dir d("q64");exportCSCFp16ImageV2(boundary(),d.p.string());
+    auto image=CSCFp16ExecutionImage::load(d.p.string(),CSCFp16ExecutionMode::FP16_IMAGE_V2);
+    setenv("CSC_FP16_BGA_CAPACITY","64",1);
+    auto q64=runFp16M7(image,CSCExecutionMode::BGA_VALIDATION);
+    unsetenv("CSC_FP16_BGA_CAPACITY");
+    EXPECT_EQ(q64.configuration_preset,"FP16_BATCH8_Q64");
+    EXPECT_EQ(q64.bga_output_count,108U);
 }
