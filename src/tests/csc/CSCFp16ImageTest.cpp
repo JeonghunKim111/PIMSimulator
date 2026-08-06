@@ -241,6 +241,38 @@ TEST(CSCFp16ImageV2Test, FP16LoaderRejectsV1AndManifestMismatch)
                  std::runtime_error);
 }
 
+TEST(CSCFp16ImageV2Test, RejectsExecutionCriticalMetadataMismatch)
+{
+    struct Mutation { const char* label; const char* from; const char* to; };
+    const std::array<Mutation, 3> mutations = {{
+        {"value_width", "\"value_bytes\":2", "\"value_bytes\":4"},
+        {"simd_width", "\"future_simd_width\":16", "\"future_simd_width\":8"},
+        {"index_lanes", "\"row_indices_per_burst\":8",
+                        "\"row_indices_per_burst\":16"}}};
+    for (const auto& mutation : mutations) {
+        TestDirectory directory(mutation.label);
+        exportCSCFp16ImageV2(boundarySource(), directory.path.string());
+        auto manifest = readText(directory.path / "manifest.json");
+        replaceOnce(manifest, mutation.from, mutation.to);
+        writeText(directory.path / "manifest.json", manifest);
+        EXPECT_THROW(loadCSCFp16ImageV2(directory.path.string()),
+                     std::runtime_error) << mutation.label;
+    }
+}
+
+TEST(CSCFp16ImageV2Test, RejectsTruncatedSecondIndexBurst)
+{
+    TestDirectory directory("truncated_index_high");
+    exportCSCFp16ImageV2(boundarySource(), directory.path.string());
+    const fs::path index_file = directory.path / "bg_28_row_idx_u32.bin";
+    auto bytes = readBytes(index_file);
+    ASSERT_GE(bytes.size(), 64U);
+    bytes.pop_back();
+    writeBytes(index_file, bytes);
+    EXPECT_THROW(loadCSCFp16ImageV2(directory.path.string()),
+                 std::runtime_error);
+}
+
 TEST(CSCFp16ImageV2Test, ExistingFP32LoaderRejectsV2)
 {
     TestDirectory directory("fp32_reject");

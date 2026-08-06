@@ -56,6 +56,7 @@ class PIMBlock
     void mad(BurstType&, const BurstType&, const BurstType&, const BurstType&, uint32_t valid_count);
     const SIMDExecutionCounters& simdCounters() const { return simd_counters_; }
     void resetSIMDCounters() { simd_counters_ = {}; }
+    PIMPrecision precision() const { return pimPrecision_; }
 
     std::string print();
 
