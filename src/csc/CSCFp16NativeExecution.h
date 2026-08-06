@@ -79,6 +79,16 @@ struct CSCFp16NativeTimingCounters {
 };
 
 struct CSCFp16NativeCounters {
+    struct BatchAdapter {
+        uint64_t generated_batches = 0;
+        uint64_t generated_partials = 0;
+        uint64_t batch0_count = 0;
+        uint64_t batch1_count = 0;
+        uint64_t issue_attempts = 0;
+        uint64_t accepted_batches = 0;
+        uint64_t stalled_attempts = 0;
+        uint64_t accepted_partials = 0;
+    } batch_adapter{};
     CSCFp16EngineCounters engine{};
     CSCFp16NativeTimingCounters timing{};
     CSCFp16BGACounters bga{};

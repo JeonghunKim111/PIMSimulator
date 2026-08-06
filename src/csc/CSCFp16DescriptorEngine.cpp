@@ -296,7 +296,8 @@ void CSCFp16DescriptorEngine::tick()
         sink_->accept({row_indices_[emit_lane_],
                        cscFp16ToBits(result_.fp16Data_[emit_lane_]),
                        global_bg_id_, descriptor_id_, chunk_id_,
-                       static_cast<uint8_t>(emit_lane_)});
+                       static_cast<uint8_t>(emit_lane_),
+                       static_cast<uint8_t>(valid_count_)});
         counters_.emitted_partials++;
         if (++emit_lane_ == valid_count_)
             state_ = CSCFp16EngineState::ADVANCE_CHUNK;

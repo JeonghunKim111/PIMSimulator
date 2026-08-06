@@ -51,16 +51,69 @@ struct CSCFp16NativeExecution::Impl {
 
 class CSCFp16NativeExecution::BGAIngressAdapter : public CSCFp16PartialSink {
   public:
-    explicit BGAIngressAdapter(CSCFp16BankGroupAccumulator* bga) : bga_(bga) {}
-    bool ready() const override { return bga_->ready(); }
+    BGAIngressAdapter(CSCFp16BankGroupAccumulator* bga,
+                      CSCFp16BGAIngressMode mode)
+        : bga_(bga), mode_(mode) {}
+    bool ready() const override
+    {
+        return mode_ == CSCFp16BGAIngressMode::SERIAL_EVENT
+                   ? bga_->ready() : !batch_complete_;
+    }
     void accept(const CSCFp16PartialEvent& event) override
     {
-        bga_->accept(event);
+        if (!ready()) throw std::logic_error("FP16 BGA adapter accept without ready");
         trace_.push_back(event);
+        if (mode_ == CSCFp16BGAIngressMode::SERIAL_EVENT) {
+            bga_->accept(event);
+            return;
+        }
+        const uint8_t batch_id = event.lane_id >= 8;
+        const uint8_t first_lane = batch_id * 8;
+        const uint8_t expected = batch_id ? event.chunk_valid_count - 8
+                                          : std::min<uint8_t>(event.chunk_valid_count, 8);
+        if (!expected || expected > 8 || event.lane_id != first_lane + batch_.valid_count)
+            throw std::logic_error("invalid FP16 batch8 lane order");
+        if (!batch_.valid_count) {
+            batch_.global_bg_id = event.global_bg_id;
+            batch_.descriptor_id = event.descriptor_id;
+            batch_.chunk_id = event.chunk_id;
+            batch_.batch_id = batch_id;
+        } else if (batch_.global_bg_id != event.global_bg_id ||
+                   batch_.descriptor_id != event.descriptor_id ||
+                   batch_.chunk_id != event.chunk_id || batch_.batch_id != batch_id) {
+            throw std::logic_error("FP16 batch8 identity changed while staging");
+        }
+        batch_.entries[batch_.valid_count++] = event;
+        if (batch_.valid_count == expected) {
+            batch_complete_ = true;
+            counters_.generated_batches++;
+            counters_.generated_partials += batch_.valid_count;
+            if (batch_id) counters_.batch1_count++;
+            else counters_.batch0_count++;
+        }
     }
+    void flush()
+    {
+        if (mode_ == CSCFp16BGAIngressMode::SERIAL_EVENT || !batch_complete_) return;
+        counters_.issue_attempts++;
+        if (!bga_->acceptBatch(batch_)) {
+            counters_.stalled_attempts++;
+            return;
+        }
+        counters_.accepted_batches++;
+        counters_.accepted_partials += batch_.valid_count;
+        batch_ = {};
+        batch_complete_ = false;
+    }
+    bool empty() const { return !batch_.valid_count && !batch_complete_; }
     const std::vector<CSCFp16PartialEvent>& trace() const { return trace_; }
+    const CSCFp16NativeCounters::BatchAdapter& counters() const { return counters_; }
   private:
     CSCFp16BankGroupAccumulator* bga_;
+    CSCFp16BGAIngressMode mode_;
+    CSCFp16PartialBatch batch_{};
+    bool batch_complete_ = false;
+    CSCFp16NativeCounters::BatchAdapter counters_{};
     std::vector<CSCFp16PartialEvent> trace_;
 };
 
@@ -108,7 +161,8 @@ CSCFp16NativeExecution::CSCFp16NativeExecution(
             bgas_.emplace_back(new CSCFp16BankGroupAccumulator(bg, *bga_config));
             bga_output_sinks_.emplace_back(
                 new CSCFp16BoundedBGAOutputSink(bga_output_capacity_per_bg));
-            bga_ingress_adapters_.emplace_back(new BGAIngressAdapter(bgas_.back().get()));
+            bga_ingress_adapters_.emplace_back(
+                new BGAIngressAdapter(bgas_.back().get(), bga_config->ingress_mode));
             ingress = bga_ingress_adapters_.back().get();
         } else {
             sinks_.emplace_back(new CSCFp16BoundedCaptureSink(sink_capacity_per_bg));
@@ -296,6 +350,7 @@ void CSCFp16NativeExecution::tick()
     cycle_++;
     if (bga_enabled_) {
         for (uint32_t bg = 0; bg < bgas_.size(); ++bg) {
+            bga_ingress_adapters_[bg]->flush();
             const auto before = bgas_[bg]->counters();
             bgas_[bg]->step();
             const auto& after = bgas_[bg]->counters();
@@ -357,7 +412,8 @@ void CSCFp16NativeExecution::tick()
                 timing_.first_accepted_partial_cycle = cycle_;
             timing_.last_accepted_partial_cycle = cycle_;
         }
-        if (bga_enabled_ && engine.done() && !bga_done_signaled_[bg]) {
+        if (bga_enabled_ && engine.done() && !bga_done_signaled_[bg] &&
+            bga_ingress_adapters_[bg]->empty()) {
             bgas_[bg]->markProducerDone();
             if (!bgas_[bg]->requestFinalDrain()) {
                 latchFailure("FP16 BGA final drain request rejected");
@@ -367,11 +423,14 @@ void CSCFp16NativeExecution::tick()
         }
     }
     if (any_bga_ingress_stall) timing_.bga_ingress_stall_global_cycles++;
+    if (bga_enabled_ && !timing_.final_drain_start_cycle &&
+        std::all_of(bga_done_signaled_.begin(), bga_done_signaled_.end(),
+                    [](bool done) { return done; }))
+        timing_.final_drain_start_cycle = cycle_;
     if (allEnginesDone() && outstanding_.empty() && !timing_.compute_complete_cycle) {
         timing_.compute_complete_cycle = cycle_;
         timing_.completion_cycle = cycle_;
         timing_.total_compute_only_cycles = cycle_ - timing_.launch_cycle;
-        if (bga_enabled_) timing_.final_drain_start_cycle = cycle_;
     }
     if (bga_enabled_) {
         for (uint32_t bg = 0; bg < bgas_.size(); ++bg) {
@@ -514,6 +573,17 @@ CSCFp16NativeCounters CSCFp16NativeExecution::counters() const
         result.timing.bga_ingress_stall_engine_cycles =
             result.engine.sink_backpressure_cycles;
     if (bga_enabled_) {
+        for (const auto& adapter : bga_ingress_adapters_) {
+            const auto& count = adapter->counters();
+            result.batch_adapter.generated_batches += count.generated_batches;
+            result.batch_adapter.generated_partials += count.generated_partials;
+            result.batch_adapter.batch0_count += count.batch0_count;
+            result.batch_adapter.batch1_count += count.batch1_count;
+            result.batch_adapter.issue_attempts += count.issue_attempts;
+            result.batch_adapter.accepted_batches += count.accepted_batches;
+            result.batch_adapter.stalled_attempts += count.stalled_attempts;
+            result.batch_adapter.accepted_partials += count.accepted_partials;
+        }
         for (const auto& bga : bgas_) {
             const auto& count = bga->counters();
             result.bga.ingress_attempts += count.ingress_attempts;

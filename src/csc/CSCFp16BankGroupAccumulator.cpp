@@ -15,6 +15,39 @@ void addLE64(uint64_t value, uint64_t& hash)
 }
 }
 
+bool CSCFp16PartialBatch::operator==(const CSCFp16PartialBatch& other) const
+{
+    if (valid_count != other.valid_count || global_bg_id != other.global_bg_id ||
+        descriptor_id != other.descriptor_id || chunk_id != other.chunk_id ||
+        batch_id != other.batch_id) return false;
+    for (uint32_t i = 0; i < valid_count; ++i)
+        if (!(entries[i] == other.entries[i])) return false;
+    return true;
+}
+
+CSCFp16BGAConfig makeFp16SerialCompatibilityConfig(uint32_t rows)
+{
+    CSCFp16BGAConfig config;
+    config.rows = rows;
+    return config;
+}
+
+CSCFp16BGAConfig makeFp16IsoStructureProductionConfig(uint32_t rows)
+{
+    CSCFp16BGAConfig config;
+    config.ingress_mode = CSCFp16BGAIngressMode::BATCH8;
+    config.ingress_batch_width = 8;
+    config.rows = rows;
+    return config;
+}
+
+CSCFp16BGAConfig makeFp16Q8StressConfig(uint32_t rows)
+{
+    auto config = makeFp16IsoStructureProductionConfig(rows);
+    config.accumulator_entries = 8;
+    config.compare_width = 8;
+    return config;
+}
 bool CSCFp16BGAOutputEvent::operator==(const CSCFp16BGAOutputEvent& other) const
 {
     return row_idx == other.row_idx && value_bits == other.value_bits &&
@@ -63,6 +96,10 @@ void CSCFp16BankGroupAccumulator::validateConfig() const
         !config_.output_queue_depth || !config_.rows || !config_.compare_latency ||
         !config_.add_latency || config_.compare_width < config_.accumulator_entries)
         throw std::invalid_argument("invalid FP16 BGA configuration");
+    const uint32_t expected = config_.ingress_mode == CSCFp16BGAIngressMode::BATCH8
+                                  ? 8 : 1;
+    if (config_.ingress_batch_width != expected)
+        throw std::invalid_argument("FP16 BGA ingress mode/width mismatch");
 }
 
 bool CSCFp16BankGroupAccumulator::ready() const
@@ -80,8 +117,50 @@ void CSCFp16BankGroupAccumulator::accept(const CSCFp16PartialEvent& event)
     }
     if (event.global_bg_id != global_bg_id_ || event.row_idx >= config_.rows)
         throw std::invalid_argument("FP16 BGA ingress identity or row mismatch");
-    accepted_pending_ = event;
-    counters_.ingress_accepted++;
+    CSCFp16PartialBatch batch;
+    batch.entries[0] = event;
+    batch.valid_count = 1;
+    batch.global_bg_id = event.global_bg_id;
+    batch.descriptor_id = event.descriptor_id;
+    batch.chunk_id = event.chunk_id;
+    batch.batch_id = event.lane_id >= 8;
+    if (!acceptBatch(batch))
+        throw std::logic_error("FP16 serial ingress lost ready reservation");
+}
+
+bool CSCFp16BankGroupAccumulator::canAcceptBatch(
+    const CSCFp16PartialBatch& batch) const
+{
+    if (producer_done_ || accepted_pending_ || !batch.valid_count ||
+        batch.valid_count > config_.ingress_batch_width ||
+        input_queue_.size() + batch.valid_count > config_.input_queue_depth)
+        return false;
+    if (batch.global_bg_id != global_bg_id_ || batch.batch_id > 1) return false;
+    for (uint32_t i = 0; i < batch.valid_count; ++i) {
+        const auto& event = batch.entries[i];
+        if (event.global_bg_id != global_bg_id_ || event.row_idx >= config_.rows ||
+            event.descriptor_id != batch.descriptor_id ||
+            event.chunk_id != batch.chunk_id ||
+            (config_.ingress_mode == CSCFp16BGAIngressMode::BATCH8 &&
+             event.lane_id != uint32_t(batch.batch_id) * 8 + i))
+            return false;
+    }
+    return true;
+}
+
+bool CSCFp16BankGroupAccumulator::acceptBatch(const CSCFp16PartialBatch& batch)
+{
+    counters_.batch_attempts++;
+    if (!canAcceptBatch(batch)) {
+        counters_.batches_stalled++;
+        return false;
+    }
+    accepted_pending_ = batch;
+    counters_.batches_accepted++;
+    counters_.ingress_accepted += batch.valid_count;
+    if (batch.batch_id) counters_.batch1_count++;
+    else counters_.batch0_count++;
+    return true;
 }
 
 void CSCFp16BankGroupAccumulator::markProducerDone()
@@ -112,6 +191,8 @@ void CSCFp16BankGroupAccumulator::step()
     else counters_.cycles_idle++;
     counters_.queue_high_water = std::max<uint64_t>(counters_.queue_high_water,
                                                     occupancy());
+    counters_.input_high_water = std::max<uint64_t>(counters_.input_high_water,
+                                                    input_queue_.size());
     if (!conservationInvariant()) throw std::logic_error("FP16 BGA conservation failure");
 }
 
@@ -201,15 +282,18 @@ void CSCFp16BankGroupAccumulator::startService()
     if (operation_ || pending_miss_ || input_queue_.empty()) return;
     const auto input = input_queue_.front();
     input_queue_.pop_front();
+    counters_.partials_serviced++;
     operation_ = Operation{OperationKind::LOOKUP, input, 0, config_.compare_latency};
 }
 
 void CSCFp16BankGroupAccumulator::commitIngress()
 {
     if (!accepted_pending_) return;
-    if (input_queue_.size() >= config_.input_queue_depth)
+    if (input_queue_.size() + accepted_pending_->valid_count >
+        config_.input_queue_depth)
         throw std::logic_error("FP16 BGA lost accepted ingress reservation");
-    input_queue_.push_back(*accepted_pending_);
+    for (uint32_t i = 0; i < accepted_pending_->valid_count; ++i)
+        input_queue_.push_back(accepted_pending_->entries[i]);
     accepted_pending_.reset();
 }
 
@@ -302,7 +386,8 @@ bool CSCFp16BankGroupAccumulator::finalDrainComplete() const
 
 uint64_t CSCFp16BankGroupAccumulator::liveContributions() const
 {
-    uint64_t count = input_queue_.size() + (accepted_pending_ ? 1 : 0) +
+    uint64_t count = input_queue_.size() +
+                     (accepted_pending_ ? accepted_pending_->valid_count : 0) +
                      (operation_ ? 1 : 0) + (pending_miss_ ? 1 : 0);
     for (const auto& entry : accumulator_)
         if (entry.valid && !entry.reserved) count += entry.contributions;

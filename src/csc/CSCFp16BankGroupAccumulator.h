@@ -10,7 +10,21 @@
 
 namespace csc_descriptor {
 
+enum class CSCFp16BGAIngressMode { SERIAL_EVENT, BATCH8 };
+
+struct CSCFp16PartialBatch {
+    std::array<CSCFp16PartialEvent, 8> entries{};
+    uint8_t valid_count = 0;
+    uint32_t global_bg_id = 0;
+    uint32_t descriptor_id = 0;
+    uint32_t chunk_id = 0;
+    uint8_t batch_id = 0;
+    bool operator==(const CSCFp16PartialBatch& other) const;
+};
+
 struct CSCFp16BGAConfig {
+    CSCFp16BGAIngressMode ingress_mode = CSCFp16BGAIngressMode::SERIAL_EVENT;
+    uint32_t ingress_batch_width = 1;
     uint32_t input_queue_depth = 16;
     uint32_t accumulator_entries = 16;
     uint32_t compare_width = 16;
@@ -19,6 +33,10 @@ struct CSCFp16BGAConfig {
     uint32_t output_queue_depth = 16;
     uint32_t rows = 1;
 };
+
+CSCFp16BGAConfig makeFp16SerialCompatibilityConfig(uint32_t rows);
+CSCFp16BGAConfig makeFp16IsoStructureProductionConfig(uint32_t rows);
+CSCFp16BGAConfig makeFp16Q8StressConfig(uint32_t rows);
 
 enum class CSCFp16BGAOutputReason { CAPACITY_EVICTION, FINAL_DRAIN };
 
@@ -59,6 +77,13 @@ struct CSCFp16BGACounters {
     uint64_t ingress_attempts = 0;
     uint64_t ingress_accepted = 0;
     uint64_t ingress_stalls = 0;
+    uint64_t batch_attempts = 0;
+    uint64_t batches_accepted = 0;
+    uint64_t batches_stalled = 0;
+    uint64_t batch0_count = 0;
+    uint64_t batch1_count = 0;
+    uint64_t partials_serviced = 0;
+    uint64_t input_high_water = 0;
     uint64_t tag_comparisons = 0;
     uint64_t lookup_hits = 0;
     uint64_t lookup_misses = 0;
@@ -82,6 +107,8 @@ class CSCFp16BankGroupAccumulator : public CSCFp16PartialSink {
                                 const CSCFp16BGAConfig& config);
     bool ready() const override;
     void accept(const CSCFp16PartialEvent&) override;
+    bool canAcceptBatch(const CSCFp16PartialBatch&) const;
+    bool acceptBatch(const CSCFp16PartialBatch&);
     void markProducerDone();
     bool requestFinalDrain();
     void step();
@@ -138,7 +165,7 @@ class CSCFp16BankGroupAccumulator : public CSCFp16PartialSink {
     uint32_t global_bg_id_;
     CSCFp16BGAConfig config_;
     std::deque<CSCFp16PartialEvent> input_queue_;
-    std::optional<CSCFp16PartialEvent> accepted_pending_;
+    std::optional<CSCFp16PartialBatch> accepted_pending_;
     std::vector<Entry> accumulator_;
     std::deque<OutputRecord> outputs_;
     std::optional<Operation> operation_;

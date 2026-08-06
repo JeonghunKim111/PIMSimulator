@@ -49,6 +49,7 @@ struct CSCFp16PartialEvent {
     uint32_t descriptor_id = 0;
     uint32_t chunk_id = 0;
     uint8_t lane_id = 0;
+    uint8_t chunk_valid_count = 0;
 
     bool operator==(const CSCFp16PartialEvent& other) const;
 };
