@@ -28,9 +28,9 @@ writeback, readback, host reduction, final-y or cross-BG merge.
 | Final drain | producer done + explicit request; oldest first | preserved |
 | Output | stable until accepted and next-step retirement | preserved |
 
-FP32 accepts a chunk batch atomically but services entries one at a time. M4
-emits one ordered event per cycle, so M5 retains that ready/valid boundary and
-does not widen it to 16. Lookup/ADD service width remains one event.
+M5 originally retained the M4 serial event boundary. M5.1 preserves it as the
+Q16 compatibility mode and adds an atomic FP32-equivalent batch8 adapter. The
+production preset is batch8/Q16; lookup/ADD service remains one entry.
 
 ## FP16 arithmetic and ordering
 
@@ -80,7 +80,7 @@ outputs = capacity evictions + final-drain outputs
 
 No mathematical-value conservation is claimed because merges round to FP16.
 
-## Golden validation
+## Legacy stress golden validation
 
 An independent replay implements queue hit, FP16 ADD, FIFO victim selection and
 oldest-first drain without sharing production state transitions. With eight
@@ -97,6 +97,10 @@ compute+BGA cycle            556
 partial FNV-1a-64            2e2867563f3d9cac
 BGA-output FNV-1a-64         935f4049c56e632f
 ```
+
+This eight-entry result is the batch8/Q8 stress golden, not production. The
+batch8/Q16 production golden is documented in
+`CSC_FP16_M5_1_INGRESS_AND_PRODUCTION_CONFIG.md`.
 
 The two active BGs remain independent; equal row indices across BGs never
 merge.

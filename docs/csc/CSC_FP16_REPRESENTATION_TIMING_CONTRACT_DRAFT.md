@@ -172,3 +172,8 @@ Compute complete and compute+BGA complete are distinct global milestones.
 Operand wait, ingress backpressure and BGA busy counters summed over BGs are
 aggregate engine/BGA cycles. BGA output remains a bounded logical event;
 transport, writeback, readback and host FP16 reduction remain outside M5.
+
+M5.1 selects atomic batch8/Q16 as the production structure while retaining
+serial/Q16 compatibility and batch8/Q8 stress presets. A 16-lane chunk maps to
+two ordered batches; internal service remains one entry. See
+`CSC_FP16_M5_1_INGRESS_AND_PRODUCTION_CONFIG.md` for golden and M6 contracts.
