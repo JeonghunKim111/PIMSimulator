@@ -83,6 +83,30 @@ TEST(CSCFp16M7ExternalTest, OptInBGAValidationReportsCycles)
              <<" final_y_hash=0x"<<*result.final_y_hash<<std::dec<<'\n';
 }
 
+TEST(CSCFp16M7ExternalTest, OptInEndToEndTimedReportsCycles)
+{
+    const char* path=getenv("CSC_FP16_EXTERNAL_IMAGE");
+    if(!path||!*path)GTEST_SKIP()<<"set CSC_FP16_EXTERNAL_IMAGE to a verified v2 image";
+    auto image=CSCFp16ExecutionImage::load(path,CSCFp16ExecutionMode::FP16_IMAGE_V2);
+    auto result=runFp16M7(image,CSCExecutionMode::END_TO_END_TIMED,2000000000ULL);
+    std::cout<<"FP16_END_TO_END_TIMED"
+             <<" image="<<path
+             <<" bga_config="<<result.configuration_preset
+             <<" compute_complete_cycle="<<*result.compute_complete_cycle
+             <<" bga_complete_cycle="<<*result.bga_complete_cycle
+             <<" writeback_complete_cycle="<<*result.writeback_complete_cycle
+             <<" readback_complete_cycle="<<*result.readback_complete_cycle
+             <<" host_reduction_complete_cycle="<<*result.host_reduction_complete_cycle
+             <<" end_to_end_cycle="<<*result.end_to_end_cycle
+             <<" bga_output_records="<<*result.bga_output_count
+             <<" write_bursts="<<*result.write_bursts
+             <<" read_bursts="<<*result.read_bursts
+             <<" write_bytes="<<*result.write_bytes
+             <<" read_bytes="<<*result.read_bytes
+             <<" bga_output_hash=0x"<<std::hex<<*result.bga_output_hash
+             <<" final_y_hash=0x"<<*result.final_y_hash<<std::dec<<'\n';
+}
+
 TEST(CSCFp16M7ExternalTest, OptInMaterializeVerifiedV1AsFp16V2)
 {
     const char* input=getenv("CSC_FP32_EXTERNAL_IMAGE");
