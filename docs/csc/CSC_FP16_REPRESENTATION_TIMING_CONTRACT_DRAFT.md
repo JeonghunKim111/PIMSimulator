@@ -182,3 +182,8 @@ M6 now realizes the eight-byte indexed record, four-record burst packing,
 logical resident-slot writeback/readback, deterministic BG/burst/slot host FP16
 reduction, and raw-bit `final_y_fp16`. See
 `CSC_FP16_M6_TRANSPORT_AND_HOST_REDUCTION.md`.
+
+M7 names the established boundaries `COMPUTE_ONLY`, `BGA_VALIDATION`, and
+`END_TO_END_TIMED`. Unavailable phases are optional, and validation replay is
+explicitly outside simulated time. See
+`CSC_FP16_M7_EXECUTION_MODES_AND_EVALUATION.md`.

@@ -98,3 +98,7 @@ M4.5 compute-only and M5.1 capture-only remain separate regressions.
 M6 preserves the FP32 logical-slot abstraction and is not a new physical
 address claim. External workloads, speedup, FP64 accuracy, energy and area are
 M7 work.
+
+M7 exposes this unchanged path as `END_TO_END_TIMED`; the untimed direct
+`BGA_VALIDATION` reducer must produce identical raw final-y bits. See
+`CSC_FP16_M7_EXECUTION_MODES_AND_EVALUATION.md`.

@@ -255,3 +255,4 @@ PIMSimulator branch is `dev`; compiler is g++ 13.3.0 and SCons is 4.5.2. The wor
 
 - [M5.1 ingress and production configuration](CSC_FP16_M5_1_INGRESS_AND_PRODUCTION_CONFIG.md)
 - [M6 transport and ordered host reduction](CSC_FP16_M6_TRANSPORT_AND_HOST_REDUCTION.md)
+- [M7 execution modes and evaluation](CSC_FP16_M7_EXECUTION_MODES_AND_EVALUATION.md)
