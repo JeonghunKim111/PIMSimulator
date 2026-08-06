@@ -26,7 +26,9 @@ GA arbitration, GA accumulator, or dense PIM-side final-y writeback.
 | x elements per burst | 8 | 16 |
 | descriptor bytes | 32 | 32 |
 
-M2 implements only the v2 representation. Production execution remains v1.
+M2 implements the v2 representation. M3/M4 adds the explicit
+`CSCFp16ExecutionMode::FP16_IMAGE_V2` path through FP16 partial generation;
+the existing FP32 engine remains v1-only and unchanged.
 
 ## Implemented FP16 image v2
 
@@ -50,7 +52,14 @@ for values, indices, and x are separate manifest counters. This exposes the
 case where short columns consume the same 32-byte physical allocation in FP32
 and FP16.
 
-## M3 request asymmetry
+## M3 production gate and request asymmetry
+
+`CSCFp16ExecutionImage::load()` is the only construction path for an FP16
+execution image. It invokes the complete v2 loader validation (manifest type
+and widths, checksums, sizes, alignment, descriptor ranges, ownership, x slots
+and zero padding) before an engine can retain the image. The FP16 engine also
+requires a `PIMBlock` whose configured precision is FP16. A v1 image or FP32
+datapath fails before launch.
 
 A future 16-NZE chunk requires one value request and one or two index requests:
 
@@ -59,18 +68,35 @@ A future 16-NZE chunk requires one value request and one or two index requests:
 | 1-8 | 1 | 1 |
 | 9-16 | 1 | 2 |
 
-The future tracker needs independent value/index offsets, two index-completion
-states, a 16-bit valid mask, and `chunk_nnz=min(remaining_nnz,16)`. None of
-these production changes are part of M1/M2.
+The implemented engine keeps independent `value_stream_offset_` and
+`index_stream_offset_`. Each chunk owns four identity-bearing request slots:
+`X`, `VALUE`, `INDEX_LOW`, and optional `INDEX_HIGH`. Completion compares the
+full request identity (request id, BG, descriptor, chunk, kind and offset), so
+arrival order is independent of issue order and stale/duplicate completion is
+rejected.
+
+The current FP32 policy creates one active chunk and issues at most one request
+per tick in X/value/index order. FP16 preserves that policy and adds high index
+as the fourth request. It introduces no next-chunk prefetch or extra request
+issue bandwidth. Compute waits for all required slots.
+
+The offsets advance after a chunk by 32 value bytes and by 32 or 64 index
+bytes. A 17-NNZ descriptor therefore requests value offsets `{0,32}` and index
+offsets `{0,32,64}` relative to its independent bases.
+
+The global v2 x file is addressed with
+`(original_col/16)*32`, selecting lane `original_col%16`. Descriptor `x_slot`
+remains the BG-local permutation slot verified against `original_col`; it is
+not incorrectly reused as a global x element number.
 
 ## Producer and BGA policy
 
-M3/M4 will preserve the current PIM-block scheduling policy initially. One
-selected block can produce up to 16 FP16 partials per operation; a later
-two-block concurrent policy would raise the peak to 32 and is a separate
-decision. BGA capacity remains iso-entry-count with FP32. Increasing producer
-width must create modeled backpressure rather than an implicit BGA throughput
-increase.
+M3/M4 preserves a single injected PIMBlock per engine, matching the current
+one-hot first-PIM-block policy. `PIMBlock::mul(..., valid_count)` executes the
+native 16-lane FP16 path and materializes binary16 products. A bounded capture
+sink replaces BGA only at the milestone boundary. It accepts one valid-lane
+event at a time and backpressures the engine without drop, duplication, or
+recomputation. It is not an FP16 BGA timing model.
 
 ## Indexed partial transport decision
 
@@ -106,6 +132,9 @@ active lanes = generated partials = BGA enqueues = matrix NNZ
 x scalar loads = descriptor count
 ```
 
-The M2 round-trip fixture already covers column sizes
-`0,1,7,8,9,15,16,17,31,32,33`, but no production request count or cycle is
-changed until M3.
+The production boundary fixture covers column sizes
+`0,1,7,8,9,15,16,17,31,32,33`, x columns 15/16, multiple BGs, low/high and
+cross-chunk duplicate rows, tails, signed zero, subnormal, maximum finite,
+overflow and NaN. It produces 169 bit-exact partial events from 15 value and
+25 index requests. No FP16 BGA, serialized partial transport, or host FP16
+reduction exists yet.
