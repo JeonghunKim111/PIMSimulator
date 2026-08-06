@@ -149,3 +149,8 @@ architectural final representation.
 
 M5.1 contains no transport record serializer, physical writeback address,
 writeback/readback, host FP16 reduction, cross-BG merge or final-y path.
+
+M6 implements the specified serializer and logical resident-slot path in
+`CSCFp16PartialResultPath`. See
+`CSC_FP16_M6_TRANSPORT_AND_HOST_REDUCTION.md`; the M5.1 capture golden remains
+an independent regression.

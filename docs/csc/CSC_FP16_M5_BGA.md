@@ -113,3 +113,7 @@ packing, writeback/readback and ordered host FP16 reduction.
 
 Descriptor fetch remains ideal/local. The output sink is a milestone capture,
 not a DRAM transport model. No full-workload performance claim is made.
+
+M6 can explicitly replace this capture boundary with the bounded transport in
+`CSC_FP16_M6_TRANSPORT_AND_HOST_REDUCTION.md`; standalone M5 behavior is
+unchanged.

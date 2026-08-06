@@ -177,3 +177,8 @@ M5.1 selects atomic batch8/Q16 as the production structure while retaining
 serial/Q16 compatibility and batch8/Q8 stress presets. A 16-lane chunk maps to
 two ordered batches; internal service remains one entry. See
 `CSC_FP16_M5_1_INGRESS_AND_PRODUCTION_CONFIG.md` for golden and M6 contracts.
+
+M6 now realizes the eight-byte indexed record, four-record burst packing,
+logical resident-slot writeback/readback, deterministic BG/burst/slot host FP16
+reduction, and raw-bit `final_y_fp16`. See
+`CSC_FP16_M6_TRANSPORT_AND_HOST_REDUCTION.md`.

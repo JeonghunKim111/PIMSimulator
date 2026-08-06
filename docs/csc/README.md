@@ -250,3 +250,8 @@ separately drained phases.
 ## 20. Git/build environment
 
 PIMSimulator branch is `dev`; compiler is g++ 13.3.0 and SCons is 4.5.2. The working tree was already dirty, so implementation/build happened in a byte-for-byte staging copy and only explicit new files plus the reviewed SCons change are transferred back. No reset, checkout, clean, branch change, commit, or overwrite of existing CSV was performed.
+
+## FP16 milestone documents
+
+- [M5.1 ingress and production configuration](CSC_FP16_M5_1_INGRESS_AND_PRODUCTION_CONFIG.md)
+- [M6 transport and ordered host reduction](CSC_FP16_M6_TRANSPORT_AND_HOST_REDUCTION.md)
