@@ -387,9 +387,7 @@ TEST(CSCFp16NativeExecutionTest, NativeFp16BGAMatchesIndependentReplayReference)
     exportCSCFp16ImageV2(boundarySource(), directory.path.string());
     const auto execution = CSCFp16ExecutionImage::load(
         directory.path.string(), CSCFp16ExecutionMode::FP16_IMAGE_V2);
-    CSCFp16BGAConfig config;
-    config.rows = 64;
-    config.accumulator_entries = config.compare_width = 8;
+    const auto config = makeFp16Q8StressConfig(64);
     CSCFp16NativeExecution native(execution, 256, &config, 256);
     runNative(native);
 
@@ -418,7 +416,15 @@ TEST(CSCFp16NativeExecutionTest, NativeFp16BGAMatchesIndependentReplayReference)
     EXPECT_GT(counters.timing.compute_bga_completion_cycle,
               counters.timing.compute_complete_cycle);
     const uint64_t hash = cscFp16BGAOutputTraceFnv1a64(actual);
-    std::cout << "FP16_M5_GOLDEN cycles="
+    EXPECT_EQ(counters.timing.total_compute_bga_cycles, 556U);
+    EXPECT_EQ(hash, 0x935f4049c56e632fULL);
+    EXPECT_EQ(counters.batch_adapter.generated_batches, 25U);
+    EXPECT_EQ(counters.batch_adapter.accepted_batches, 25U);
+    EXPECT_EQ(counters.batch_adapter.generated_partials, 169U);
+    EXPECT_EQ(counters.batch_adapter.accepted_partials, 169U);
+    EXPECT_EQ(counters.batch_adapter.batch0_count, 15U);
+    EXPECT_EQ(counters.batch_adapter.batch1_count, 10U);
+    std::cout << "FP16_M5_1_BATCH8_Q8_STRESS_GOLDEN cycles="
               << counters.timing.total_compute_bga_cycles
               << " compute_cycle=" << counters.timing.compute_complete_cycle
               << " drain_start=" << counters.timing.final_drain_start_cycle
@@ -432,15 +438,76 @@ TEST(CSCFp16NativeExecutionTest, NativeFp16BGAMatchesIndependentReplayReference)
               << " trace_fnv1a64=0x" << std::hex << hash << std::dec << '\n';
 }
 
+TEST(CSCFp16NativeExecutionTest, Batch8Q16ProductionMatchesSerialQ16)
+{
+    TestDirectory directory("m5_1_production");
+    exportCSCFp16ImageV2(boundarySource(), directory.path.string());
+    const auto execution = CSCFp16ExecutionImage::load(
+        directory.path.string(), CSCFp16ExecutionMode::FP16_IMAGE_V2);
+    const auto serial_config = makeFp16SerialCompatibilityConfig(64);
+    const auto production_config = makeFp16IsoStructureProductionConfig(64);
+    CSCFp16NativeExecution serial(execution, 256, &serial_config, 256);
+    CSCFp16NativeExecution production(execution, 256, &production_config, 256);
+    runNative(serial);
+    runNative(production);
+    const auto serial_trace = flattenBGAOutput(serial);
+    const auto production_trace = flattenBGAOutput(production);
+    ASSERT_EQ(production_trace, serial_trace);
+    EXPECT_EQ(cscFp16BGAOutputTraceFnv1a64(production_trace),
+              cscFp16BGAOutputTraceFnv1a64(serial_trace));
+    const auto count = production.counters();
+    EXPECT_EQ(count.engine.generated_partials, 169U);
+    EXPECT_EQ(count.bga.ingress_accepted, 169U);
+    EXPECT_EQ(count.batch_adapter.generated_batches, 25U);
+    EXPECT_EQ(count.batch_adapter.accepted_batches, 25U);
+    EXPECT_EQ(count.batch_adapter.batch0_count, 15U);
+    EXPECT_EQ(count.batch_adapter.batch1_count, 10U);
+    EXPECT_EQ(count.batch_adapter.generated_partials, 169U);
+    EXPECT_EQ(count.batch_adapter.accepted_partials, 169U);
+    EXPECT_EQ(count.bga.fp16_adds, count.bga.merges);
+    EXPECT_EQ(count.bga.retired_contributions, 169U);
+    EXPECT_EQ(count.bga.output_accepted,
+              count.bga.capacity_evictions + count.bga.final_drain_outputs);
+    EXPECT_EQ(count.bga.queue_high_water, 16U);
+    const uint64_t hash = cscFp16BGAOutputTraceFnv1a64(production_trace);
+    EXPECT_EQ(count.timing.total_compute_bga_cycles, 564U);
+    EXPECT_EQ(count.timing.compute_complete_cycle, 544U);
+    EXPECT_EQ(count.timing.final_drain_start_cycle, 544U);
+    EXPECT_EQ(count.timing.last_bga_output_accepted_cycle, 563U);
+    EXPECT_EQ(count.bga.merges, 4U);
+    EXPECT_EQ(count.bga.capacity_evictions, 133U);
+    EXPECT_EQ(count.bga.final_drain_outputs, 32U);
+    EXPECT_EQ(production_trace.size(), 165U);
+    EXPECT_EQ(hash, 0x96c3f823f3fe5ab1ULL);
+    std::cout << "FP16_M5_1_BATCH8_Q16_PRODUCTION_GOLDEN cycles="
+              << count.timing.total_compute_bga_cycles
+              << " compute_cycle=" << count.timing.compute_complete_cycle
+              << " drain_start=" << count.timing.final_drain_start_cycle
+              << " last_output_accept="
+              << count.timing.last_bga_output_accepted_cycle
+              << " batches=" << count.batch_adapter.accepted_batches
+              << " batch0=" << count.batch_adapter.batch0_count
+              << " batch1=" << count.batch_adapter.batch1_count
+              << " ingress=" << count.bga.ingress_accepted
+              << " merges=" << count.bga.merges
+              << " evictions=" << count.bga.capacity_evictions
+              << " final_drains=" << count.bga.final_drain_outputs
+              << " outputs=" << production_trace.size()
+              << " ingress_stall_global="
+              << count.timing.bga_ingress_stall_global_cycles
+              << " ingress_stall_engine="
+              << count.timing.bga_ingress_stall_engine_cycles
+              << " output_stalls=" << count.timing.bga_output_sink_stall_cycles
+              << " trace_fnv1a64=0x" << std::hex << hash << std::dec << '\n';
+}
+
 TEST(CSCFp16NativeExecutionTest, BGAOutputBackpressureDelaysButPreservesTrace)
 {
     TestDirectory directory("m5_output_stall");
     exportCSCFp16ImageV2(boundarySource(), directory.path.string());
     const auto execution = CSCFp16ExecutionImage::load(
         directory.path.string(), CSCFp16ExecutionMode::FP16_IMAGE_V2);
-    CSCFp16BGAConfig config;
-    config.rows = 64;
-    config.accumulator_entries = config.compare_width = 8;
+    const auto config = makeFp16Q8StressConfig(64);
     CSCFp16NativeExecution reference(execution, 256, &config, 256);
     runNative(reference);
     const auto expected = flattenBGAOutput(reference);
