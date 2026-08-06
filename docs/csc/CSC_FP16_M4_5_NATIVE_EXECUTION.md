@@ -144,3 +144,7 @@ M5 must replace the capture sink with an FP16 BGA implementing the same
 ready/accept and exactly-once guarantees, then define FP16 ADD rounding,
 capacity, merge/eviction/drain order and timing. No performance conclusion or
 full-workload evaluation is made at M4.5.
+
+M5 now provides that replacement as an explicit opt-in mode while retaining
+this compute-only mode and its partial hash as regression contracts. See
+`CSC_FP16_M5_BGA.md`; transport remains outside both modes.

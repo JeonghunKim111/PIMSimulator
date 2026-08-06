@@ -158,3 +158,17 @@ engines are DONE, all accepted reads have completed and all generated events
 have passed the bounded capture handshake. It includes actual operand request
 queueing, response latency, operand wait and capture stalls. It still excludes
 descriptor DRAM fetch, FP16 BGA, partial transport, readback and host reduction.
+
+## M5 native FP16 BGA
+
+M5 can replace the compute capture port with one iso-entry-count FP16 BGA per
+global BG. The M4 ordered one-event ready/valid interface is retained and is
+not widened to 16. Accepted events become FIFO-visible at the following BGA
+step. Lookup scans all valid non-reserved tags, hits immediately materialize a
+`cscFp16Add`, and full misses retire the oldest insertion before replacement.
+Descriptor boundaries do not flush; producer completion triggers final drain.
+
+Compute complete and compute+BGA complete are distinct global milestones.
+Operand wait, ingress backpressure and BGA busy counters summed over BGs are
+aggregate engine/BGA cycles. BGA output remains a bounded logical event;
+transport, writeback, readback and host FP16 reduction remain outside M5.

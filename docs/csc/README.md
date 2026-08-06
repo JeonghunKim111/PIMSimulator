@@ -7,6 +7,8 @@ FP16 development documents:
 - `CSC_IMAGE_FORMAT_V2_FP16.md`
 - `CSC_FP16_M3_M4_DESCRIPTOR_COMPUTE.md`
 - `CSC_FP16_M4_5_NATIVE_EXECUTION.md`
+- `CSC_FP16_M5_BGA.md`
+- `CSC_FP16_M4_5_NATIVE_EXECUTION.md`
 
 ## 1. Project goal
 
