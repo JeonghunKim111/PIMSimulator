@@ -329,4 +329,143 @@ TEST(CSCFp16NativeExecutionTest, SinkBackpressureDelaysCompletionWithoutTraceCha
               reference.counters().timing.total_compute_only_cycles);
 }
 
+std::vector<CSCFp16BGAOutputEvent> referenceBGA(
+    uint32_t bg, const std::vector<CSCFp16PartialEvent>& input, uint32_t capacity)
+{
+    struct Entry {
+        uint32_t row;
+        CSCFp16Bits value;
+        uint64_t age;
+        uint64_t contributions;
+    };
+    std::vector<Entry> entries;
+    std::vector<CSCFp16BGAOutputEvent> output;
+    uint64_t age = 0, sequence = 0;
+    for (const auto& event : input) {
+        auto hit = std::find_if(entries.begin(), entries.end(), [&](const Entry& entry) {
+            return entry.row == event.row_idx;
+        });
+        if (hit != entries.end()) {
+            hit->value = cscFp16ToBits(cscFp16Add(
+                cscFp16FromBits(hit->value), cscFp16FromBits(event.value_bits)));
+            hit->contributions++;
+            continue;
+        }
+        if (entries.size() == capacity) {
+            auto victim = std::min_element(entries.begin(), entries.end(),
+                [](const Entry& a, const Entry& b) { return a.age < b.age; });
+            output.push_back({victim->row, victim->value, bg,
+                              CSCFp16BGAOutputReason::CAPACITY_EVICTION,
+                              ++sequence, victim->contributions});
+            entries.erase(victim);
+        }
+        entries.push_back({event.row_idx, event.value_bits, ++age, 1});
+    }
+    std::sort(entries.begin(), entries.end(),
+              [](const Entry& a, const Entry& b) { return a.age < b.age; });
+    for (const auto& entry : entries)
+        output.push_back({entry.row, entry.value, bg,
+                          CSCFp16BGAOutputReason::FINAL_DRAIN,
+                          ++sequence, entry.contributions});
+    return output;
+}
+
+std::vector<CSCFp16BGAOutputEvent> flattenBGAOutput(
+    const CSCFp16NativeExecution& native)
+{
+    std::vector<CSCFp16BGAOutputEvent> result;
+    for (uint32_t bg = 0; bg < 64; ++bg) {
+        const auto& trace = native.bgaOutputSink(bg).trace();
+        result.insert(result.end(), trace.begin(), trace.end());
+    }
+    return result;
+}
+
+TEST(CSCFp16NativeExecutionTest, NativeFp16BGAMatchesIndependentReplayReference)
+{
+    TestDirectory directory("m5_bga");
+    exportCSCFp16ImageV2(boundarySource(), directory.path.string());
+    const auto execution = CSCFp16ExecutionImage::load(
+        directory.path.string(), CSCFp16ExecutionMode::FP16_IMAGE_V2);
+    CSCFp16BGAConfig config;
+    config.rows = 64;
+    config.accumulator_entries = config.compare_width = 8;
+    CSCFp16NativeExecution native(execution, 256, &config, 256);
+    runNative(native);
+
+    const auto synthetic = runSynthetic(execution);
+    std::vector<CSCFp16BGAOutputEvent> expected;
+    for (uint32_t bg = 0; bg < 64; ++bg) {
+        EXPECT_EQ(native.bgaIngressTrace(bg), synthetic[bg]);
+        const auto reference = referenceBGA(bg, synthetic[bg], 8);
+        EXPECT_EQ(native.bgaOutputSink(bg).trace(), reference) << "BG " << bg;
+        expected.insert(expected.end(), reference.begin(), reference.end());
+    }
+    const auto actual = flattenBGAOutput(native);
+    ASSERT_EQ(actual, expected);
+    const auto partials = flatten(synthetic);
+    EXPECT_EQ(cscFp16PartialTraceFnv1a64(partials), 0x2e2867563f3d9cacULL);
+    const auto counters = native.counters();
+    EXPECT_EQ(counters.engine.generated_partials, 169U);
+    EXPECT_EQ(counters.engine.emitted_partials, 169U);
+    EXPECT_EQ(counters.bga.ingress_accepted, 169U);
+    EXPECT_EQ(counters.bga.retired_contributions, 169U);
+    EXPECT_EQ(counters.bga.fp16_adds, counters.bga.merges);
+    EXPECT_EQ(counters.bga.output_accepted,
+              counters.bga.capacity_evictions + counters.bga.final_drain_outputs);
+    EXPECT_GT(counters.bga.capacity_evictions, 0U);
+    EXPECT_EQ(counters.bga.queue_high_water, 8U);
+    EXPECT_GT(counters.timing.compute_bga_completion_cycle,
+              counters.timing.compute_complete_cycle);
+    const uint64_t hash = cscFp16BGAOutputTraceFnv1a64(actual);
+    std::cout << "FP16_M5_GOLDEN cycles="
+              << counters.timing.total_compute_bga_cycles
+              << " compute_cycle=" << counters.timing.compute_complete_cycle
+              << " drain_start=" << counters.timing.final_drain_start_cycle
+              << " ingress=" << counters.bga.ingress_accepted
+              << " ingress_stall_engine_cycles="
+              << counters.timing.bga_ingress_stall_engine_cycles
+              << " merges=" << counters.bga.merges
+              << " evictions=" << counters.bga.capacity_evictions
+              << " final_drains=" << counters.bga.final_drain_outputs
+              << " outputs=" << actual.size()
+              << " trace_fnv1a64=0x" << std::hex << hash << std::dec << '\n';
+}
+
+TEST(CSCFp16NativeExecutionTest, BGAOutputBackpressureDelaysButPreservesTrace)
+{
+    TestDirectory directory("m5_output_stall");
+    exportCSCFp16ImageV2(boundarySource(), directory.path.string());
+    const auto execution = CSCFp16ExecutionImage::load(
+        directory.path.string(), CSCFp16ExecutionMode::FP16_IMAGE_V2);
+    CSCFp16BGAConfig config;
+    config.rows = 64;
+    config.accumulator_entries = config.compare_width = 8;
+    CSCFp16NativeExecution reference(execution, 256, &config, 256);
+    runNative(reference);
+    const auto expected = flattenBGAOutput(reference);
+
+    CSCFp16NativeExecution stalled(execution, 256, &config, 256);
+    stalled.setBGAOutputSinkEnabled(7, false);
+    stalled.setBGAOutputSinkEnabled(8, false);
+    stalled.launch();
+    for (uint32_t guard = 0; guard < 200000 && !stalled.done() &&
+         !stalled.failed(); ++guard) {
+        if (guard == 600) {
+            stalled.setBGAOutputSinkEnabled(7, true);
+            stalled.setBGAOutputSinkEnabled(8, true);
+        }
+        stalled.tick();
+    }
+    ASSERT_FALSE(stalled.failed()) << stalled.error();
+    ASSERT_TRUE(stalled.done());
+    EXPECT_EQ(flattenBGAOutput(stalled), expected);
+    EXPECT_GT(stalled.counters().timing.bga_output_sink_stall_cycles, 0U);
+    EXPECT_GT(stalled.counters().timing.bga_ingress_stall_engine_cycles, 0U);
+    EXPECT_GT(stalled.counters().timing.bga_ingress_stall_global_cycles, 0U);
+    EXPECT_GT(stalled.counters().timing.total_compute_bga_cycles,
+              reference.counters().timing.total_compute_bga_cycles);
+    EXPECT_EQ(stalled.counters().bga.ingress_accepted, 169U);
+}
+
 }  // namespace

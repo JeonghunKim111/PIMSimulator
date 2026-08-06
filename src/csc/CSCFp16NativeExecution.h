@@ -2,6 +2,7 @@
 #define CSC_FP16_NATIVE_EXECUTION_H
 
 #include "csc/CSCFp16DescriptorEngine.h"
+#include "csc/CSCFp16BankGroupAccumulator.h"
 
 #include <array>
 #include <cstdint>
@@ -60,18 +61,36 @@ struct CSCFp16NativeTimingCounters {
     uint64_t capture_sink_stall_cycles = 0;
     uint64_t pim_execution_cycles = 0;
     uint64_t total_compute_only_cycles = 0;
+    uint64_t first_bga_ingress_attempt_cycle = 0;
+    uint64_t first_bga_ingress_accept_cycle = 0;
+    uint64_t first_bga_compare_cycle = 0;
+    uint64_t first_fp16_add_cycle = 0;
+    uint64_t first_bga_output_generated_cycle = 0;
+    uint64_t first_bga_output_accepted_cycle = 0;
+    uint64_t compute_complete_cycle = 0;
+    uint64_t final_drain_start_cycle = 0;
+    uint64_t last_bga_output_generated_cycle = 0;
+    uint64_t last_bga_output_accepted_cycle = 0;
+    uint64_t compute_bga_completion_cycle = 0;
+    uint64_t bga_output_sink_stall_cycles = 0;
+    uint64_t bga_ingress_stall_global_cycles = 0;
+    uint64_t bga_ingress_stall_engine_cycles = 0;
+    uint64_t total_compute_bga_cycles = 0;
 };
 
 struct CSCFp16NativeCounters {
     CSCFp16EngineCounters engine{};
     CSCFp16NativeTimingCounters timing{};
+    CSCFp16BGACounters bga{};
 };
 
 class CSCFp16NativeExecution {
   public:
     explicit CSCFp16NativeExecution(
         std::shared_ptr<const CSCFp16ExecutionImage> image,
-        std::size_t sink_capacity_per_bg = 4096);
+        std::size_t sink_capacity_per_bg = 4096,
+        const CSCFp16BGAConfig* bga_config = nullptr,
+        std::size_t bga_output_capacity_per_bg = 4096);
     ~CSCFp16NativeExecution();
 
     void launch();
@@ -91,6 +110,13 @@ class CSCFp16NativeExecution {
         return request_trace_;
     }
     CSCFp16NativeCounters counters() const;
+    bool bgaEnabled() const { return bga_enabled_; }
+    const CSCFp16BankGroupAccumulator& bga(uint32_t global_bg) const;
+    const CSCFp16BoundedBGAOutputSink& bgaOutputSink(uint32_t global_bg) const;
+    CSCFp16BoundedBGAOutputSink& bgaOutputSink(uint32_t global_bg);
+    CSCFp16BGAOutputEvent popBGAOutput(uint32_t global_bg);
+    void setBGAOutputSinkEnabled(uint32_t global_bg, bool enabled);
+    const std::vector<CSCFp16PartialEvent>& bgaIngressTrace(uint32_t global_bg) const;
 
   private:
     struct Outstanding {
@@ -100,6 +126,7 @@ class CSCFp16NativeExecution {
         uint64_t accepted_cycle = 0;
     };
     struct Impl;
+    class BGAIngressAdapter;
 
     bool submit(const CSCFp16Request& request);
     void tokenComplete(unsigned channel, const DRAMSim::RequestToken& token,
@@ -108,11 +135,15 @@ class CSCFp16NativeExecution {
     std::array<uint8_t, 32> payloadFor(const Outstanding& request) const;
     void latchFailure(const std::string& message);
     bool allEnginesDone() const;
+    bool allBGAsDone() const;
 
     std::shared_ptr<const CSCFp16ExecutionImage> image_;
     std::unique_ptr<Impl> impl_;
     std::vector<std::unique_ptr<DRAMSim::PIMBlock>> datapaths_;
     std::vector<std::unique_ptr<CSCFp16BoundedCaptureSink>> sinks_;
+    std::vector<std::unique_ptr<CSCFp16BankGroupAccumulator>> bgas_;
+    std::vector<std::unique_ptr<CSCFp16BoundedBGAOutputSink>> bga_output_sinks_;
+    std::vector<std::unique_ptr<BGAIngressAdapter>> bga_ingress_adapters_;
     std::vector<std::unique_ptr<CSCFp16DescriptorEngine>> engines_;
     std::map<uint64_t, Outstanding> outstanding_;
     std::map<uint64_t, uint64_t> first_attempt_cycles_;
@@ -120,6 +151,8 @@ class CSCFp16NativeExecution {
     std::vector<CSCFp16NativeRequestRecord> request_trace_;
     CSCFp16NativeTimingCounters timing_{};
     uint64_t cycle_ = 0;
+    bool bga_enabled_ = false;
+    std::array<bool, 64> bga_done_signaled_{};
     bool launched_ = false;
     bool failed_ = false;
     std::string error_;

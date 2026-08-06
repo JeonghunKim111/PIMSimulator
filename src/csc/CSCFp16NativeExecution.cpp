@@ -49,12 +49,29 @@ struct CSCFp16NativeExecution::Impl {
     DRAMSim::BurstType burst{};
 };
 
+class CSCFp16NativeExecution::BGAIngressAdapter : public CSCFp16PartialSink {
+  public:
+    explicit BGAIngressAdapter(CSCFp16BankGroupAccumulator* bga) : bga_(bga) {}
+    bool ready() const override { return bga_->ready(); }
+    void accept(const CSCFp16PartialEvent& event) override
+    {
+        bga_->accept(event);
+        trace_.push_back(event);
+    }
+    const std::vector<CSCFp16PartialEvent>& trace() const { return trace_; }
+  private:
+    CSCFp16BankGroupAccumulator* bga_;
+    std::vector<CSCFp16PartialEvent> trace_;
+};
+
 CSCFp16NativeExecution::CSCFp16NativeExecution(
     std::shared_ptr<const CSCFp16ExecutionImage> image,
-    std::size_t sink_capacity_per_bg)
-    : image_(std::move(image)), impl_(new Impl)
+    std::size_t sink_capacity_per_bg, const CSCFp16BGAConfig* bga_config,
+    std::size_t bga_output_capacity_per_bg)
+    : image_(std::move(image)), impl_(new Impl), bga_enabled_(bga_config != nullptr)
 {
-    if (!image_ || !sink_capacity_per_bg)
+    if (!image_ || !sink_capacity_per_bg ||
+        (bga_enabled_ && !bga_output_capacity_per_bg))
         throw std::invalid_argument("invalid FP16 native execution construction");
     impl_->memory = std::make_shared<DRAMSim::MultiChannelMemorySystem>(
         "ini/HBM2_samsung_2M_16B_x64.ini", "system_hbm_csc_fp32.ini", ".",
@@ -86,11 +103,21 @@ CSCFp16NativeExecution::CSCFp16NativeExecution(
 
     for (uint32_t bg = 0; bg < 64; ++bg) {
         datapaths_.emplace_back(new DRAMSim::PIMBlock(DRAMSim::FP16));
-        sinks_.emplace_back(new CSCFp16BoundedCaptureSink(sink_capacity_per_bg));
+        CSCFp16PartialSink* ingress = nullptr;
+        if (bga_enabled_) {
+            bgas_.emplace_back(new CSCFp16BankGroupAccumulator(bg, *bga_config));
+            bga_output_sinks_.emplace_back(
+                new CSCFp16BoundedBGAOutputSink(bga_output_capacity_per_bg));
+            bga_ingress_adapters_.emplace_back(new BGAIngressAdapter(bgas_.back().get()));
+            ingress = bga_ingress_adapters_.back().get();
+        } else {
+            sinks_.emplace_back(new CSCFp16BoundedCaptureSink(sink_capacity_per_bg));
+            ingress = sinks_.back().get();
+        }
         engines_.emplace_back(new CSCFp16DescriptorEngine(
             bg, image_, datapaths_.back().get(),
             [this](const CSCFp16Request& request) { return submit(request); },
-            sinks_.back().get()));
+            ingress));
     }
 }
 
@@ -107,6 +134,7 @@ void CSCFp16NativeExecution::launch()
     if (launched_) throw std::logic_error("FP16 native execution already launched");
     timing_ = {};
     timing_.launch_cycle = cycle_;
+    bga_done_signaled_ = {};
     for (auto& engine : engines_) engine->launch();
     launched_ = true;
 }
@@ -266,6 +294,27 @@ void CSCFp16NativeExecution::tick()
     if (!launched_ || done() || failed_) return;
     impl_->memory->update();
     cycle_++;
+    if (bga_enabled_) {
+        for (uint32_t bg = 0; bg < bgas_.size(); ++bg) {
+            const auto before = bgas_[bg]->counters();
+            bgas_[bg]->step();
+            const auto& after = bgas_[bg]->counters();
+            if (after.tag_comparisons > before.tag_comparisons) {
+                if (!timing_.first_bga_compare_cycle)
+                    timing_.first_bga_compare_cycle = cycle_;
+            }
+            if (after.fp16_adds > before.fp16_adds) {
+                if (!timing_.first_fp16_add_cycle) timing_.first_fp16_add_cycle = cycle_;
+            }
+            if (after.capacity_evictions + after.final_drain_outputs >
+                before.capacity_evictions + before.final_drain_outputs) {
+                if (!timing_.first_bga_output_generated_cycle)
+                    timing_.first_bga_output_generated_cycle = cycle_;
+                timing_.last_bga_output_generated_cycle = cycle_;
+            }
+        }
+    }
+    bool any_bga_ingress_stall = false;
     for (uint32_t bg = 0; bg < engines_.size() && !failed_; ++bg) {
         auto& engine = *engines_[bg];
         const auto before = engine.counters();
@@ -276,6 +325,9 @@ void CSCFp16NativeExecution::tick()
             break;
         }
         const auto& after = engine.counters();
+        if (bga_enabled_ && after.sink_backpressure_cycles >
+                                before.sink_backpressure_cycles)
+            any_bga_ingress_stall = true;
         if (after.descriptor_count > before.descriptor_count) {
             if (!timing_.first_descriptor_cycle)
                 timing_.first_descriptor_cycle = cycle_;
@@ -295,14 +347,51 @@ void CSCFp16NativeExecution::tick()
             timing_.last_generated_partial_cycle = cycle_;
         }
         if (after.emitted_partials > before.emitted_partials) {
+            if (bga_enabled_) {
+                if (!timing_.first_bga_ingress_attempt_cycle)
+                    timing_.first_bga_ingress_attempt_cycle = cycle_;
+                if (!timing_.first_bga_ingress_accept_cycle)
+                    timing_.first_bga_ingress_accept_cycle = cycle_;
+            }
             if (!timing_.first_accepted_partial_cycle)
                 timing_.first_accepted_partial_cycle = cycle_;
             timing_.last_accepted_partial_cycle = cycle_;
         }
+        if (bga_enabled_ && engine.done() && !bga_done_signaled_[bg]) {
+            bgas_[bg]->markProducerDone();
+            if (!bgas_[bg]->requestFinalDrain()) {
+                latchFailure("FP16 BGA final drain request rejected");
+                break;
+            }
+            bga_done_signaled_[bg] = true;
+        }
     }
-    if (allEnginesDone() && outstanding_.empty()) {
+    if (any_bga_ingress_stall) timing_.bga_ingress_stall_global_cycles++;
+    if (allEnginesDone() && outstanding_.empty() && !timing_.compute_complete_cycle) {
+        timing_.compute_complete_cycle = cycle_;
         timing_.completion_cycle = cycle_;
         timing_.total_compute_only_cycles = cycle_ - timing_.launch_cycle;
+        if (bga_enabled_) timing_.final_drain_start_cycle = cycle_;
+    }
+    if (bga_enabled_) {
+        for (uint32_t bg = 0; bg < bgas_.size(); ++bg) {
+            if (!bgas_[bg]->hasOutput()) continue;
+            if (!bga_output_sinks_[bg]->ready()) {
+                timing_.bga_output_sink_stall_cycles++;
+                continue;
+            }
+            bga_output_sinks_[bg]->accept(bgas_[bg]->peekOutput());
+            bgas_[bg]->acceptOutput();
+            if (!timing_.first_bga_output_accepted_cycle)
+                timing_.first_bga_output_accepted_cycle = cycle_;
+            timing_.last_bga_output_accepted_cycle = cycle_;
+        }
+        if (allBGAsDone()) {
+            timing_.compute_bga_completion_cycle = cycle_;
+            timing_.total_compute_bga_cycles = cycle_ - timing_.launch_cycle;
+        }
+    } else if (allEnginesDone() && outstanding_.empty()) {
+        timing_.compute_bga_completion_cycle = timing_.completion_cycle;
     }
 }
 
@@ -315,8 +404,17 @@ bool CSCFp16NativeExecution::allEnginesDone() const
 
 bool CSCFp16NativeExecution::done() const
 {
-    return launched_ && !failed_ && timing_.completion_cycle &&
-           outstanding_.empty() && allEnginesDone();
+    return launched_ && !failed_ && timing_.completion_cycle && outstanding_.empty() &&
+           allEnginesDone() && (!bga_enabled_ ||
+                                (timing_.compute_bga_completion_cycle && allBGAsDone()));
+}
+
+bool CSCFp16NativeExecution::allBGAsDone() const
+{
+    if (!bga_enabled_) return true;
+    for (const auto& bga : bgas_)
+        if (!bga->finalDrainComplete()) return false;
+    return true;
 }
 
 void CSCFp16NativeExecution::setRejectBudget(uint32_t global_bg,
@@ -327,23 +425,63 @@ void CSCFp16NativeExecution::setRejectBudget(uint32_t global_bg,
 
 void CSCFp16NativeExecution::setSinkEnabled(uint32_t global_bg, bool enabled)
 {
+    if (bga_enabled_) throw std::logic_error("M5 uses BGA output sink control");
     sinks_.at(global_bg)->setEnabled(enabled);
 }
 
 CSCFp16PartialEvent CSCFp16NativeExecution::popCaptured(uint32_t global_bg)
 {
+    if (bga_enabled_) throw std::logic_error("M5 has no compute capture queue");
     return sinks_.at(global_bg)->pop();
 }
 
 const CSCFp16BoundedCaptureSink& CSCFp16NativeExecution::sink(
     uint32_t global_bg) const
 {
+    if (bga_enabled_) throw std::logic_error("M5 uses BGA ingress trace");
     return *sinks_.at(global_bg);
 }
 
 CSCFp16BoundedCaptureSink& CSCFp16NativeExecution::sink(uint32_t global_bg)
 {
+    if (bga_enabled_) throw std::logic_error("M5 uses BGA ingress trace");
     return *sinks_.at(global_bg);
+}
+
+const CSCFp16BankGroupAccumulator& CSCFp16NativeExecution::bga(uint32_t bg) const
+{
+    if (!bga_enabled_) throw std::logic_error("FP16 native BGA disabled");
+    return *bgas_.at(bg);
+}
+
+const CSCFp16BoundedBGAOutputSink& CSCFp16NativeExecution::bgaOutputSink(
+    uint32_t bg) const
+{
+    if (!bga_enabled_) throw std::logic_error("FP16 native BGA disabled");
+    return *bga_output_sinks_.at(bg);
+}
+
+CSCFp16BoundedBGAOutputSink& CSCFp16NativeExecution::bgaOutputSink(uint32_t bg)
+{
+    if (!bga_enabled_) throw std::logic_error("FP16 native BGA disabled");
+    return *bga_output_sinks_.at(bg);
+}
+
+CSCFp16BGAOutputEvent CSCFp16NativeExecution::popBGAOutput(uint32_t bg)
+{
+    return bgaOutputSink(bg).pop();
+}
+
+void CSCFp16NativeExecution::setBGAOutputSinkEnabled(uint32_t bg, bool enabled)
+{
+    bgaOutputSink(bg).setEnabled(enabled);
+}
+
+const std::vector<CSCFp16PartialEvent>& CSCFp16NativeExecution::bgaIngressTrace(
+    uint32_t bg) const
+{
+    if (!bga_enabled_) throw std::logic_error("FP16 native BGA disabled");
+    return bga_ingress_adapters_.at(bg)->trace();
 }
 
 CSCFp16NativeCounters CSCFp16NativeExecution::counters() const
@@ -372,6 +510,33 @@ CSCFp16NativeCounters CSCFp16NativeExecution::counters() const
     result.timing.operand_wait_cycles = result.engine.operand_wait_cycles;
     result.timing.capture_sink_stall_cycles =
         result.engine.sink_backpressure_cycles;
+    if (bga_enabled_)
+        result.timing.bga_ingress_stall_engine_cycles =
+            result.engine.sink_backpressure_cycles;
+    if (bga_enabled_) {
+        for (const auto& bga : bgas_) {
+            const auto& count = bga->counters();
+            result.bga.ingress_attempts += count.ingress_attempts;
+            result.bga.ingress_accepted += count.ingress_accepted;
+            result.bga.ingress_stalls += count.ingress_stalls;
+            result.bga.tag_comparisons += count.tag_comparisons;
+            result.bga.lookup_hits += count.lookup_hits;
+            result.bga.lookup_misses += count.lookup_misses;
+            result.bga.fp16_adds += count.fp16_adds;
+            result.bga.merges += count.merges;
+            result.bga.inserts += count.inserts;
+            result.bga.capacity_evictions += count.capacity_evictions;
+            result.bga.final_drain_outputs += count.final_drain_outputs;
+            result.bga.output_stalls += count.output_stalls;
+            result.bga.output_attempts += count.output_attempts;
+            result.bga.output_accepted += count.output_accepted;
+            result.bga.queue_high_water =
+                std::max(result.bga.queue_high_water, count.queue_high_water);
+            result.bga.cycles_busy += count.cycles_busy;
+            result.bga.cycles_idle += count.cycles_idle;
+            result.bga.retired_contributions += count.retired_contributions;
+        }
+    }
     return result;
 }
 
