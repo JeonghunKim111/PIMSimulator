@@ -102,7 +102,8 @@ class CSCFp16NativeExecution {
         std::size_t sink_capacity_per_bg = 4096,
         const CSCFp16BGAConfig* bga_config = nullptr,
         std::size_t bga_output_capacity_per_bg = 4096,
-        const CSCFp16TransportConfig* transport_config = nullptr);
+        const CSCFp16TransportConfig* transport_config = nullptr,
+        uint32_t validation_output_accepts_per_cycle = 64);
     ~CSCFp16NativeExecution();
 
     void launch();
@@ -169,6 +170,8 @@ class CSCFp16NativeExecution {
     uint64_t cycle_ = 0;
     bool bga_enabled_ = false;
     std::array<bool, 64> bga_done_signaled_{};
+    uint32_t validation_output_accepts_per_cycle_ = 64;
+    uint32_t validation_output_next_bg_ = 0;
     bool launched_ = false;
     bool failed_ = false;
     std::string error_;

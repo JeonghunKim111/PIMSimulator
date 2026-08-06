@@ -121,12 +121,18 @@ CSCFp16NativeExecution::CSCFp16NativeExecution(
     std::shared_ptr<const CSCFp16ExecutionImage> image,
     std::size_t sink_capacity_per_bg, const CSCFp16BGAConfig* bga_config,
     std::size_t bga_output_capacity_per_bg,
-    const CSCFp16TransportConfig* transport_config)
-    : image_(std::move(image)), impl_(new Impl), bga_enabled_(bga_config != nullptr)
+    const CSCFp16TransportConfig* transport_config,
+    uint32_t validation_output_accepts_per_cycle)
+    : image_(std::move(image)), impl_(new Impl), bga_enabled_(bga_config != nullptr),
+      validation_output_accepts_per_cycle_(validation_output_accepts_per_cycle)
 {
     if (!image_ || !sink_capacity_per_bg ||
         (bga_enabled_ && !bga_output_capacity_per_bg))
         throw std::invalid_argument("invalid FP16 native execution construction");
+    if (!validation_output_accepts_per_cycle_ ||
+        validation_output_accepts_per_cycle_ > 64)
+        throw std::invalid_argument(
+            "FP16 validation output accepts per cycle must be in [1,64]");
     if (transport_config && !bga_enabled_)
         throw std::invalid_argument("FP16 transport requires BGA");
     if (transport_config)
@@ -439,7 +445,11 @@ void CSCFp16NativeExecution::tick()
         timing_.total_compute_only_cycles = cycle_ - timing_.launch_cycle;
     }
     if (bga_enabled_) {
-        for (uint32_t bg = 0; bg < bgas_.size(); ++bg) {
+        uint32_t validation_accepted = 0;
+        const uint32_t validation_scan_start = validation_output_next_bg_;
+        for (uint32_t scan = 0; scan < bgas_.size(); ++scan) {
+            const uint32_t bg = transport_ ? scan :
+                (validation_scan_start + scan) % bgas_.size();
             if (!bgas_[bg]->hasOutput()) continue;
             if (transport_) {
                 if (!transport_->accept(bgas_[bg]->peekOutput())) {
@@ -451,8 +461,12 @@ void CSCFp16NativeExecution::tick()
                 timing_.bga_output_sink_stall_cycles++;
                 continue;
             } else {
+                if (validation_accepted >= validation_output_accepts_per_cycle_)
+                    continue;
                 bga_output_sinks_[bg]->accept(bgas_[bg]->peekOutput());
                 bgas_[bg]->acceptOutput();
+                ++validation_accepted;
+                validation_output_next_bg_ = (bg + 1) % bgas_.size();
             }
             if (!timing_.first_bga_output_accepted_cycle)
                 timing_.first_bga_output_accepted_cycle = cycle_;

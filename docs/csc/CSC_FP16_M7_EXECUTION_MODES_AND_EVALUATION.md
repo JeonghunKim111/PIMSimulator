@@ -22,6 +22,12 @@ event. Replay has no simulated cycles. Packing preserves this order as
 BG/burst/slot, so validation and full mode must have identical raw vectors and
 hash `64a5f1109a6f2bd6`.
 
+The validation output consumer width is configurable with
+`CSC_BGA_VALIDATION_ACCEPTS_PER_CYCLE` in the range 1--64. The default remains
+64 to preserve the M5.1/M7 synthetic golden. Paired FP32/FP16 validation runs
+must set the value explicitly (normally 1); this controls only BGA-output
+collection bandwidth, not BGA ingress, compare width, or internal service.
+
 ## External image and result-region preflight
 
 `runFp16M7` accepts a verified `CSCFp16ExecutionImage`; v2 manifest, precision,

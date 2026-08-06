@@ -1,4 +1,5 @@
 #include "csc/CSCFp16M7.h"
+#include "tests/csc/CSCExternalImage.h"
 
 #include <gtest/gtest.h>
 
@@ -62,4 +63,61 @@ TEST(CSCFp16M7ArtifactTest, PublishesValidatedFilesWithoutOverwrite)
 TEST(CSCFp16M7ExternalTest, OptInVerifiedV2ImageRunsAllModes)
 {
     const char* path=getenv("CSC_FP16_EXTERNAL_IMAGE");if(!path||!*path)GTEST_SKIP()<<"set CSC_FP16_EXTERNAL_IMAGE to a verified v2 image";auto image=CSCFp16ExecutionImage::load(path,CSCFp16ExecutionMode::FP16_IMAGE_V2);auto validation=runFp16M7(image,CSCExecutionMode::BGA_VALIDATION);auto full=runFp16M7(image,CSCExecutionMode::END_TO_END_TIMED);EXPECT_EQ(validation.final_y_bits,full.final_y_bits);
+}
+
+TEST(CSCFp16M7ExternalTest, OptInBGAValidationReportsCycles)
+{
+    const char* path=getenv("CSC_FP16_EXTERNAL_IMAGE");
+    if(!path||!*path)GTEST_SKIP()<<"set CSC_FP16_EXTERNAL_IMAGE to a verified v2 image";
+    auto image=CSCFp16ExecutionImage::load(path,CSCFp16ExecutionMode::FP16_IMAGE_V2);
+    auto result=runFp16M7(image,CSCExecutionMode::BGA_VALIDATION,2000000000ULL);
+    const char* accepts=getenv("CSC_BGA_VALIDATION_ACCEPTS_PER_CYCLE");
+    std::cout<<"FP16_BGA_VALIDATION"
+             <<" image="<<path
+             <<" validation_accepts_per_cycle="<<(accepts?accepts:"64")
+             <<" compute_complete_cycle="<<*result.compute_complete_cycle
+             <<" bga_complete_cycle="<<*result.bga_complete_cycle
+             <<" bga_output_records="<<*result.bga_output_count
+             <<" bga_output_hash=0x"<<std::hex<<*result.bga_output_hash
+             <<" final_y_hash=0x"<<*result.final_y_hash<<std::dec<<'\n';
+}
+
+TEST(CSCFp16M7ExternalTest, OptInMaterializeVerifiedV1AsFp16V2)
+{
+    const char* input=getenv("CSC_FP32_EXTERNAL_IMAGE");
+    const char* output=getenv("CSC_FP16_OUTPUT_IMAGE");
+    if(!input||!*input||!output||!*output)
+        GTEST_SKIP()<<"set CSC_FP32_EXTERNAL_IMAGE and CSC_FP16_OUTPUT_IMAGE";
+    auto fp32=loadExternalPhysicalImage(input);
+    CSCFp16ImageSource source;
+    source.rows=fp32.layout.matrix.rows;
+    source.cols=fp32.layout.matrix.cols;
+    source.col_ptr=fp32.layout.matrix.col_ptr;
+    source.row_idx=fp32.layout.matrix.row_idx;
+    source.values.assign(fp32.layout.matrix.values.begin(),fp32.layout.matrix.values.end());
+    source.column_to_bg=fp32.layout.column_to_bg;
+    source.x.resize(source.cols);
+    for(uint32_t col=0;col<source.cols;++col)
+        source.x[col]=double((col%13)+1)/7.0;
+    exportCSCFp16ImageV2(source,output);
+    auto loaded=loadCSCFp16ImageV2(output);
+    EXPECT_EQ(loaded.matrix.rows,source.rows);
+    EXPECT_EQ(loaded.matrix.cols,source.cols);
+    EXPECT_EQ(loaded.matrix.row_idx,source.row_idx);
+    EXPECT_EQ(loaded.column_to_bg,source.column_to_bg);
+    EXPECT_EQ(loaded.matrix.value_bits.size(),source.values.size());
+}
+
+TEST(CSCFp16M7ModeTest, ValidationAcceptWidthIsConfigurable)
+{
+    Dir d("accept_width");exportCSCFp16ImageV2(boundary(),d.p.string());
+    auto image=CSCFp16ExecutionImage::load(d.p.string(),CSCFp16ExecutionMode::FP16_IMAGE_V2);
+    setenv("CSC_BGA_VALIDATION_ACCEPTS_PER_CYCLE","1",1);
+    auto one=runFp16M7(image,CSCExecutionMode::BGA_VALIDATION);
+    setenv("CSC_BGA_VALIDATION_ACCEPTS_PER_CYCLE","64",1);
+    auto wide=runFp16M7(image,CSCExecutionMode::BGA_VALIDATION);
+    unsetenv("CSC_BGA_VALIDATION_ACCEPTS_PER_CYCLE");
+    EXPECT_EQ(one.final_y_bits,wide.final_y_bits);
+    EXPECT_EQ(one.bga_output_hash,wide.bga_output_hash);
+    EXPECT_GE(*one.bga_complete_cycle,*wide.bga_complete_cycle);
 }
