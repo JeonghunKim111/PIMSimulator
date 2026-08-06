@@ -94,6 +94,8 @@ std::vector<double> cscFp64Oracle(const CSCFp16ImageSource& source,
                                   bool quantize_inputs);
 CSCAccuracyMetrics compareFp16ToFp64(const std::vector<CSCFp16Bits>&,
                                      const std::vector<double>& reference);
+CSCAccuracyMetrics compareFp64ToFp64(const std::vector<double>& values,
+                                     const std::vector<double>& reference);
 struct CSCFp16AccuracyBreakdown {
     CSCAccuracyMetrics total_error;
     CSCAccuracyMetrics input_quantization_error;
