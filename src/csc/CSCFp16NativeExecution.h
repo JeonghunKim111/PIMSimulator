@@ -3,6 +3,7 @@
 
 #include "csc/CSCFp16DescriptorEngine.h"
 #include "csc/CSCFp16BankGroupAccumulator.h"
+#include "csc/CSCFp16PartialResultPath.h"
 
 #include <array>
 #include <cstdint>
@@ -100,7 +101,8 @@ class CSCFp16NativeExecution {
         std::shared_ptr<const CSCFp16ExecutionImage> image,
         std::size_t sink_capacity_per_bg = 4096,
         const CSCFp16BGAConfig* bga_config = nullptr,
-        std::size_t bga_output_capacity_per_bg = 4096);
+        std::size_t bga_output_capacity_per_bg = 4096,
+        const CSCFp16TransportConfig* transport_config = nullptr);
     ~CSCFp16NativeExecution();
 
     void launch();
@@ -127,6 +129,9 @@ class CSCFp16NativeExecution {
     CSCFp16BGAOutputEvent popBGAOutput(uint32_t global_bg);
     void setBGAOutputSinkEnabled(uint32_t global_bg, bool enabled);
     const std::vector<CSCFp16PartialEvent>& bgaIngressTrace(uint32_t global_bg) const;
+    bool transportEnabled() const { return transport_ != nullptr; }
+    const CSCFp16PartialResultPath& transport() const;
+    const std::vector<CSCFp16Bits>& finalYFp16Bits() const;
 
   private:
     struct Outstanding {
@@ -155,6 +160,7 @@ class CSCFp16NativeExecution {
     std::vector<std::unique_ptr<CSCFp16BoundedBGAOutputSink>> bga_output_sinks_;
     std::vector<std::unique_ptr<BGAIngressAdapter>> bga_ingress_adapters_;
     std::vector<std::unique_ptr<CSCFp16DescriptorEngine>> engines_;
+    std::unique_ptr<CSCFp16PartialResultPath> transport_;
     std::map<uint64_t, Outstanding> outstanding_;
     std::map<uint64_t, uint64_t> first_attempt_cycles_;
     std::array<uint64_t, 64> reject_budget_{};

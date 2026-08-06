@@ -120,12 +120,18 @@ class CSCFp16NativeExecution::BGAIngressAdapter : public CSCFp16PartialSink {
 CSCFp16NativeExecution::CSCFp16NativeExecution(
     std::shared_ptr<const CSCFp16ExecutionImage> image,
     std::size_t sink_capacity_per_bg, const CSCFp16BGAConfig* bga_config,
-    std::size_t bga_output_capacity_per_bg)
+    std::size_t bga_output_capacity_per_bg,
+    const CSCFp16TransportConfig* transport_config)
     : image_(std::move(image)), impl_(new Impl), bga_enabled_(bga_config != nullptr)
 {
     if (!image_ || !sink_capacity_per_bg ||
         (bga_enabled_ && !bga_output_capacity_per_bg))
         throw std::invalid_argument("invalid FP16 native execution construction");
+    if (transport_config && !bga_enabled_)
+        throw std::invalid_argument("FP16 transport requires BGA");
+    if (transport_config)
+        transport_.reset(new CSCFp16PartialResultPath(
+            *transport_config, image_->image().matrix.rows));
     impl_->memory = std::make_shared<DRAMSim::MultiChannelMemorySystem>(
         "ini/HBM2_samsung_2M_16B_x64.ini", "system_hbm_csc_fp32.ini", ".",
         "csc_fp16_native_m45", 256 * 16);
@@ -435,17 +441,31 @@ void CSCFp16NativeExecution::tick()
     if (bga_enabled_) {
         for (uint32_t bg = 0; bg < bgas_.size(); ++bg) {
             if (!bgas_[bg]->hasOutput()) continue;
-            if (!bga_output_sinks_[bg]->ready()) {
+            if (transport_) {
+                if (!transport_->accept(bgas_[bg]->peekOutput())) {
+                    timing_.bga_output_sink_stall_cycles++;
+                    continue;
+                }
+                bgas_[bg]->acceptOutput();
+            } else if (!bga_output_sinks_[bg]->ready()) {
                 timing_.bga_output_sink_stall_cycles++;
                 continue;
+            } else {
+                bga_output_sinks_[bg]->accept(bgas_[bg]->peekOutput());
+                bgas_[bg]->acceptOutput();
             }
-            bga_output_sinks_[bg]->accept(bgas_[bg]->peekOutput());
-            bgas_[bg]->acceptOutput();
             if (!timing_.first_bga_output_accepted_cycle)
                 timing_.first_bga_output_accepted_cycle = cycle_;
             timing_.last_bga_output_accepted_cycle = cycle_;
         }
-        if (allBGAsDone()) {
+        if (transport_) {
+            std::vector<bool> drain_complete(bgas_.size());
+            for (uint32_t bg=0; bg<bgas_.size(); ++bg)
+                drain_complete[bg]=bgas_[bg]->finalDrainComplete();
+            transport_->step(cycle_, drain_complete);
+            if (transport_->failed()) latchFailure(transport_->error());
+        }
+        if (allBGAsDone() && !timing_.compute_bga_completion_cycle) {
             timing_.compute_bga_completion_cycle = cycle_;
             timing_.total_compute_bga_cycles = cycle_ - timing_.launch_cycle;
         }
@@ -465,7 +485,8 @@ bool CSCFp16NativeExecution::done() const
 {
     return launched_ && !failed_ && timing_.completion_cycle && outstanding_.empty() &&
            allEnginesDone() && (!bga_enabled_ ||
-                                (timing_.compute_bga_completion_cycle && allBGAsDone()));
+                                (timing_.compute_bga_completion_cycle && allBGAsDone() &&
+                                 (!transport_ || transport_->done())));
 }
 
 bool CSCFp16NativeExecution::allBGAsDone() const
@@ -541,6 +562,17 @@ const std::vector<CSCFp16PartialEvent>& CSCFp16NativeExecution::bgaIngressTrace(
 {
     if (!bga_enabled_) throw std::logic_error("FP16 native BGA disabled");
     return bga_ingress_adapters_.at(bg)->trace();
+}
+
+const CSCFp16PartialResultPath& CSCFp16NativeExecution::transport() const
+{
+    if (!transport_) throw std::logic_error("FP16 transport disabled");
+    return *transport_;
+}
+
+const std::vector<CSCFp16Bits>& CSCFp16NativeExecution::finalYFp16Bits() const
+{
+    return transport().finalYBits();
 }
 
 CSCFp16NativeCounters CSCFp16NativeExecution::counters() const

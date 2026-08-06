@@ -501,6 +501,54 @@ TEST(CSCFp16NativeExecutionTest, Batch8Q16ProductionMatchesSerialQ16)
               << " trace_fnv1a64=0x" << std::hex << hash << std::dec << '\n';
 }
 
+TEST(CSCFp16NativeExecutionTest, M6Batch8Q16ProducesOrderedFinalY)
+{
+    TestDirectory directory("m6_end_to_end");
+    const auto source=boundarySource();
+    exportCSCFp16ImageV2(source,directory.path.string());
+    const auto execution=CSCFp16ExecutionImage::load(directory.path.string(),CSCFp16ExecutionMode::FP16_IMAGE_V2);
+    const auto bga_config=makeFp16IsoStructureProductionConfig(source.rows);
+    CSCFp16TransportConfig transport_config;
+    transport_config.buffer_capacity_bursts_per_bg=64;
+    CSCFp16NativeExecution native(execution,256,&bga_config,256,&transport_config);
+    runNative(native);
+    ASSERT_TRUE(native.transportEnabled());
+    const auto& path=native.transport(); const auto& tc=path.counters();
+    EXPECT_EQ(tc.outputs_accepted,165U); EXPECT_EQ(tc.records_packed,165U);
+    EXPECT_EQ(tc.records_reduced,165U); EXPECT_EQ(tc.fp16_host_adds,165U);
+    EXPECT_EQ(tc.full_bursts+tc.tail_bursts,tc.writes_accepted);
+    EXPECT_EQ(tc.writes_accepted,tc.write_completions);
+    EXPECT_EQ(tc.writes_accepted,tc.reads_accepted);
+    EXPECT_EQ(tc.reads_accepted,tc.read_completions);
+    EXPECT_EQ(tc.write_bytes,tc.read_bytes);
+    EXPECT_EQ(tc.write_bytes,(tc.full_bursts+tc.tail_bursts)*32U);
+    std::vector<CSCFp16Bits> reference(source.rows,0);
+    std::array<std::vector<CSCFp16BGAOutputEvent>,64> ordered;
+    for(const auto& event:path.acceptedTrace())ordered[event.global_bg_id].push_back(event);
+    for(auto& trace:ordered)std::sort(trace.begin(),trace.end(),[](const auto&a,const auto&b){return a.sequence<b.sequence;});
+    for(const auto& trace:ordered)for(const auto& event:trace)reference[event.row_idx]=cscFp16ToBits(cscFp16Add(cscFp16FromBits(reference[event.row_idx]),cscFp16FromBits(event.value_bits)));
+    EXPECT_EQ(native.finalYFp16Bits(),reference);
+    const uint64_t record_hash=cscFp16TransportRecordTraceFnv1a64(path.acceptedTrace());
+    const uint64_t burst_hash=cscFp16BurstTraceFnv1a64(path.residentTrace());
+    const uint64_t final_hash=cscFp16FinalYFnv1a64(native.finalYFp16Bits());
+    std::vector<CSCFp16BGAOutputEvent> bg_ordered;
+    for(const auto& trace:ordered)bg_ordered.insert(bg_ordered.end(),trace.begin(),trace.end());
+    EXPECT_EQ(cscFp16BGAOutputTraceFnv1a64(bg_ordered),0x96c3f823f3fe5ab1ULL);
+    EXPECT_EQ(native.counters().timing.compute_bga_completion_cycle,564U);
+    EXPECT_EQ(native.cycle(),655U); EXPECT_EQ(tc.full_bursts,41U); EXPECT_EQ(tc.tail_bursts,1U);
+    EXPECT_EQ(tc.writeback_complete_cycle,569U); EXPECT_EQ(tc.readback_complete_cycle,618U);
+    EXPECT_EQ(tc.reduction_complete_cycle,655U);
+    EXPECT_EQ(record_hash,0xbcfec10599ee6444ULL);
+    EXPECT_EQ(burst_hash,0x49383a2ab16bbf67ULL);
+    EXPECT_EQ(final_hash,0x64a5f1109a6f2bd6ULL);
+    std::cout<<"FP16_M6_END_TO_END_GOLDEN cycles="<<native.cycle()<<" records="<<tc.outputs_accepted
+             <<" full="<<tc.full_bursts<<" tail="<<tc.tail_bursts<<" writes="<<tc.writes_accepted
+             <<" reads="<<tc.reads_accepted<<" write_complete="<<tc.writeback_complete_cycle
+             <<" read_complete="<<tc.readback_complete_cycle<<" reduce_complete="<<tc.reduction_complete_cycle
+             <<" record_hash=0x"<<std::hex<<record_hash<<" burst_hash=0x"<<burst_hash
+             <<" final_hash=0x"<<final_hash<<std::dec<<'\n';
+}
+
 TEST(CSCFp16NativeExecutionTest, BGAOutputBackpressureDelaysButPreservesTrace)
 {
     TestDirectory directory("m5_output_stall");
