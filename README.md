@@ -1,5 +1,26 @@
 # PIMSimulator
 
+## Final CSC SpMV releases
+
+This branch is the final FP16 implementation of the CSC outer-product SpMV
+pipeline and is the latest production branch.
+
+- FP16: branch `fp16-final`, tag `fp16-m7-final`
+- FP32: branch `fp32-final`, tag `fp32-m7-final`
+- FP16 architecture: 16-lane binary16 compute, BG-decoupled descriptor
+  execution, BG-local BGA, partial-result writeback/readback, and deterministic
+  indexed reduction
+
+Build and run the core FP16 regression suite:
+
+```bash
+scons
+./sim --gtest_filter='CSCFp16*.*:FP16SemanticsCharacterizationTest.*:CSCFP32GoldenBaselineTest.*'
+```
+
+External matrix tests are opt-in and require a verified FP16 CSC v2 image as
+documented under `docs/csc/`.
+
 ## Contents
 
 - [1. Overview](#1-overview)
