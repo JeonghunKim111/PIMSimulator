@@ -1,5 +1,26 @@
 # PIMSimulator
 
+## Final CSC SpMV releases
+
+This branch is the final FP32 implementation of the CSC outer-product SpMV
+pipeline.
+
+- FP32: branch `fp32-final`, tag `fp32-m7-final`
+- FP16: branch `fp16-final`, tag `fp16-m7-final`
+- FP32 architecture: BG-decoupled descriptor execution, masked 8-lane FP32
+  multiply, BG-local BGA, partial-result writeback/readback, and deterministic
+  indexed host reduction
+
+Build and run the core FP32 regression suite:
+
+```bash
+scons
+./sim --gtest_filter='CSCM6IntegrationTest.*:CSCM6SchedulingComparisonTest.*:CSCM7BEndToEndTest.*'
+```
+
+Tests that consume an exported CSC image are opt-in and require the environment
+variables documented under `docs/csc/`.
+
 ## Contents
 
 - [1. Overview](#1-overview)
