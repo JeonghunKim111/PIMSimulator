@@ -10,6 +10,11 @@ namespace spmv
 {
 
 inline constexpr unsigned kElementsPerBurst = 16;
+inline constexpr unsigned kSparsePimPseudoChannels = 16;
+inline constexpr unsigned kSparsePimRanks = 1;
+inline constexpr unsigned kBankGroupsPerPseudoChannel = 4;
+inline constexpr unsigned kSparsePimBankGroups =
+    kSparsePimPseudoChannels * kSparsePimRanks * kBankGroupsPerPseudoChannel;
 inline constexpr unsigned kDrafNzesPerColumnGroup = 16;
 inline constexpr unsigned kDrafColumnGroupsPerRow = 7;
 inline constexpr unsigned kBgaEntriesPerBacc = 8;
@@ -29,6 +34,8 @@ double clamp01(double value);
 SpmvInputs loadSparsePIMInputs(const std::string& matrix_path,
                                const std::string& permutation_path,
                                const std::string& clusters_path);
+SpmvInputs loadNaiveCooInputs(const std::string& matrix_path,
+                              uint64_t num_clusters);
 void applyClusterLimit(SpmvInputs& inputs, uint64_t max_clusters);
 DrafStats buildDrafStats(const SpmvInputs& inputs);
 BgaStats buildBgaStats(const SpmvInputs& inputs,

@@ -849,9 +849,10 @@ class ClusteredSpmvBenchFixture : public testing::Test
     void resetPIMKernel()
     {
         mem_ = make_shared<MultiChannelMemorySystem>("ini/HBM2_samsung_2M_16B_x64.ini",
-                                                     "system_hbm_64ch.ini", ".", "spmv_bench",
-                                                     256 * 64 * 2);
-        kernel_ = make_shared<PIMKernel>(mem_, 64, 1);
+                                                     "system_hbm.ini", ".", "spmv_bench",
+                                                     256 * kSparsePimPseudoChannels);
+        kernel_ = make_shared<PIMKernel>(mem_, kSparsePimPseudoChannels,
+                                         kSparsePimRanks);
     }
 
     shared_ptr<MultiChannelMemorySystem> mem_;
@@ -865,11 +866,38 @@ class ClusteredSpmvBenchFixture : public testing::Test
                                                     const string& input_name,
                                                     const string& matrix_name,
                                                     int structural_variant = 3);
+    StructuralModelResult runDrafBgaStructuralModelFromInputs(
+        SpmvInputs inputs, const string& input_name, const string& matrix_name,
+        int structural_variant = 3);
     void runGuidedKmeansDrafBgaSuite(bool conservative_model = false,
                                      bool v2_model = false, bool v21_model = false);
     void runGuidedKmeansDrafBgaStructuralSuite(int structural_variant = 3);
+    void runNaiveCooRoundRobinBV4Suite();
 };
 }  // namespace
+
+TEST(SpmvDrafBgaStructuralCommonTest, LoadsNaiveCooRoundRobinMapping)
+{
+    SpmvInputs inputs = loadNaiveCooInputs("src/tests/data/naive_coo_toy.txt",
+                                           kSparsePimBankGroups);
+
+    EXPECT_EQ(inputs.n_rows, 4);
+    EXPECT_EQ(inputs.n_cols, 66);
+    EXPECT_EQ(inputs.nnz, 4);
+    ASSERT_EQ(inputs.clusters.size(), kSparsePimBankGroups);
+    ASSERT_EQ(inputs.reordered_col_to_cluster.size(), 66);
+    EXPECT_EQ(inputs.reordered_col_to_cluster[0], 0);
+    EXPECT_EQ(inputs.reordered_col_to_cluster[64], 0);
+    EXPECT_EQ(inputs.reordered_col_to_cluster[65], 1);
+    EXPECT_EQ(inputs.clusters[0].num_cols, 2);
+    EXPECT_EQ(inputs.clusters[1].num_cols, 2);
+    EXPECT_EQ(inputs.clusters[0].nnz, 3);
+    EXPECT_EQ(inputs.clusters[1].nnz, 1);
+    EXPECT_EQ(inputs.clusters[0].active_rows, 3);
+    EXPECT_EQ(inputs.clusters[1].active_rows, 1);
+    EXPECT_EQ(inputs.rows_with_any_partial, 4);
+    EXPECT_EQ(inputs.total_active_row_memberships, 4);
+}
 
 TEST_F(ClusteredSpmvBenchFixture, sparsepim_cluster_cantcoo)
 {
@@ -1695,15 +1723,19 @@ StructuralBaseTiming ClusteredSpmvBenchFixture::runDrafBgaStructuralBaseTiming(
     vector<char> bga_channels(kernel_->num_pim_chans_, 0);
     for (const BgaGroupInfo& group : bga.groups)
         bga_channels[group.channel] = 1;
-    for (size_t group_idx = 0; group_idx < bga.groups.size(); ++group_idx)
+    for (const BgaGroupInfo& group : bga.groups)
     {
-        const BgaGroupInfo& group = bga.groups[group_idx];
         uint64_t readback_tx = ceilDiv(group.partials_after, kElementsPerBurst);
+        if (readback_tx > 0 &&
+            kResultReadBaseRow + (readback_tx - 1) / 32 >=
+                kernel_->pim_addr_mgr_->num_rows_)
+            throw runtime_error("BGA readback exceeds physical row capacity");
         for (uint64_t i = 0; i < readback_tx; ++i)
         {
-            unsigned row = kResultReadBaseRow + static_cast<unsigned>(group_idx * 16 + (i / 32));
+            unsigned row = kResultReadBaseRow + static_cast<unsigned>(i / 32);
             unsigned col = i % 32;
-            addTx(mem_, *kernel_->pim_addr_mgr_, false, group.channel, 0, 0, row, col,
+            addTx(mem_, *kernel_->pim_addr_mgr_, false, group.channel, group.bank_group, 0,
+                  row, col,
                   &null_bst);
         }
     }
@@ -1718,6 +1750,14 @@ StructuralModelResult ClusteredSpmvBenchFixture::runDrafBgaStructuralModel(
 {
     SpmvInputs inputs = loadSparsePIMInputs(base + "reordered_matrix.txt",
                                             base + "column_permutation.txt", base + "clusters.txt");
+    return runDrafBgaStructuralModelFromInputs(
+        move(inputs), input_name, matrix_name, structural_variant);
+}
+
+StructuralModelResult ClusteredSpmvBenchFixture::runDrafBgaStructuralModelFromInputs(
+    SpmvInputs inputs, const string& input_name, const string& matrix_name,
+    int structural_variant)
+{
     uint64_t max_clusters = envLimit("SPMV_BENCH_MAX_CLUSTERS");
     applyClusterLimit(inputs, max_clusters);
     DrafStats draf = buildDrafStats(inputs);
@@ -2390,6 +2430,61 @@ void ClusteredSpmvBenchFixture::runGuidedKmeansDrafBgaStructuralSuite(
     }
 }
 
+void ClusteredSpmvBenchFixture::runNaiveCooRoundRobinBV4Suite()
+{
+    constexpr uint64_t kNaiveClusters = kSparsePimBankGroups;
+    const vector<string> matrices{
+        "ASIC_100k", "Stanford", "bcsstk32", "cant", "consph", "crankseg_2",
+        "ct20stif", "lhr71", "ohne2", "pdb1HYS", "pwtk", "rma10", "shipsec1",
+        "soc-sign-epinions", "webbase-1M", "xenon2",
+    };
+
+    string only_matrix = envString("SPMV_BENCH_MATRIX");
+    bool matched = false;
+    vector<StructuralModelResult> results;
+    cout << ">>Naive original-order COO round-robin DRAF+BGA BV-4 suite\n"
+         << "  mapping: cluster_id = original_column_id % " << kNaiveClusters << "\n"
+         << "  clustering: none\n"
+         << "  column_reordering: none" << endl;
+
+    for (const string& matrix : matrices)
+    {
+        if (!only_matrix.empty() && matrix != only_matrix)
+            continue;
+        matched = true;
+        resetPIMKernel();
+        string path = "../SparsePIM/sparse_matrix_coo/" + matrix + "_coo.txt";
+        SpmvInputs inputs = loadNaiveCooInputs(path, kNaiveClusters);
+        results.push_back(runDrafBgaStructuralModelFromInputs(
+            move(inputs), "SparsePIM/sparse_matrix_coo/" + matrix + "_coo.txt",
+            matrix, 1004));
+    }
+    if (!only_matrix.empty())
+    {
+        ASSERT_TRUE(matched) << "unknown SPMV_BENCH_MATRIX=" << only_matrix;
+    }
+
+    const string output_path = "../SparsePIM/naive_coo_round_robin_bv4_64bg_results.csv";
+    ofstream out(output_path);
+    if (!out)
+        throw runtime_error("failed to open " + output_path);
+    out << "matrix,mapping,clusters,model_ms,total_cycle,setup_cycle,"
+           "draf_row_fetch_cycle,draf_compute_trigger_cycle,padding_cycle,"
+           "bga_accumulate_cycle,bga_output_readback_cycle,final_reduce_cycle,"
+           "draf_padding_ratio,draf_memory_expansion,bg_imbalance\n";
+    for (const StructuralModelResult& result : results)
+    {
+        out << result.matrix << ",column_mod_64," << kNaiveClusters << ","
+            << result.model_ms << "," << result.total_cycle << ","
+            << result.setup_cycle << "," << result.draf_row_fetch_cycle << ","
+            << result.draf_compute_trigger_cycle << "," << result.padding_cycle << ","
+            << result.bga_accumulate_cycle << "," << result.bga_output_readback_cycle << ","
+            << result.final_reduce_cycle << "," << result.draf_padding_ratio << ","
+            << result.draf_memory_expansion << "," << result.bg_imbalance << "\n";
+    }
+    cout << "  wrote_results: " << output_path << endl;
+}
+
 TEST_F(ClusteredSpmvBenchFixture, sparsepim_cluster_cantcoo_draf_bga_model)
 {
     runDrafBgaModel("../SparsePIM/cluster_cantcoo/", "SparsePIM/cluster_cantcoo");
@@ -2546,6 +2641,11 @@ TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_bv3_struc
 TEST_F(ClusteredSpmvBenchFixture, sparsepim_guided_kmeans_coo_draf_bga_bv4_structural_model)
 {
     runGuidedKmeansDrafBgaStructuralSuite(1004);
+}
+
+TEST_F(ClusteredSpmvBenchFixture, sparsepim_naive_coo_round_robin_draf_bga_bv4_structural_model)
+{
+    runNaiveCooRoundRobinBV4Suite();
 }
 
 TEST_F(ClusteredSpmvBenchFixture, sparsepim_minhash_binpack_v1_cantcoo_draf_bga_bv4_structural_model)

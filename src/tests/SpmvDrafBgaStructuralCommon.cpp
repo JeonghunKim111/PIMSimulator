@@ -92,6 +92,61 @@ SpmvInputs loadSparsePIMInputs(const string& matrix_path, const string& permutat
     return inputs;
 }
 
+SpmvInputs loadNaiveCooInputs(const string& matrix_path, uint64_t num_clusters)
+{
+    if (num_clusters == 0)
+        throw invalid_argument("num_clusters must be greater than zero");
+
+    ifstream matrix_file(matrix_path);
+    if (!matrix_file)
+        throw runtime_error("failed to open " + matrix_path);
+
+    SpmvInputs inputs;
+    if (!(matrix_file >> inputs.n_rows >> inputs.n_cols >> inputs.nnz))
+        throw runtime_error("failed to read COO header from " + matrix_path);
+
+    inputs.rows_by_col.resize(inputs.n_cols);
+    inputs.reordered_col_to_cluster.resize(inputs.n_cols, -1);
+    inputs.clusters.resize(num_clusters);
+    vector<unordered_set<unsigned>> active_rows_by_cluster(num_clusters);
+    vector<char> any_row(inputs.n_rows, 0);
+
+    for (uint64_t cluster = 0; cluster < num_clusters; ++cluster)
+        inputs.clusters[cluster].id = static_cast<unsigned>(cluster);
+    for (uint64_t col = 0; col < inputs.n_cols; ++col)
+    {
+        uint64_t cluster = col % num_clusters;
+        inputs.reordered_col_to_cluster[col] = static_cast<int>(cluster);
+        inputs.clusters[cluster].num_cols++;
+    }
+
+    uint64_t parsed_nnz = 0;
+    uint64_t row = 0;
+    uint64_t col = 0;
+    string value;
+    while (matrix_file >> row >> col >> value)
+    {
+        if (row >= inputs.n_rows || col >= inputs.n_cols)
+            throw runtime_error("COO entry exceeds declared dimensions in " + matrix_path);
+        uint64_t cluster = col % num_clusters;
+        inputs.rows_by_col[col].push_back(static_cast<unsigned>(row));
+        inputs.clusters[cluster].nnz++;
+        active_rows_by_cluster[cluster].insert(static_cast<unsigned>(row));
+        any_row[row] = 1;
+        parsed_nnz++;
+    }
+    if (parsed_nnz != inputs.nnz)
+        throw runtime_error("COO NNZ count does not match header in " + matrix_path);
+
+    for (uint64_t cluster = 0; cluster < num_clusters; ++cluster)
+    {
+        inputs.clusters[cluster].active_rows = active_rows_by_cluster[cluster].size();
+        inputs.total_active_row_memberships += inputs.clusters[cluster].active_rows;
+    }
+    inputs.rows_with_any_partial = count(any_row.begin(), any_row.end(), 1);
+    return inputs;
+}
+
 void applyClusterLimit(SpmvInputs& inputs, uint64_t max_clusters)
 {
     if (max_clusters == 0 || max_clusters >= inputs.clusters.size())
@@ -265,8 +320,7 @@ BgaTemporalReuseStats estimateTemporalBgaReuse(const vector<unsigned>& row_strea
 BgaStats buildBgaStats(const SpmvInputs& inputs, uint64_t bga_acc_capacity)
 {
     BgaStats stats;
-    constexpr unsigned kLogicalBankGroups = 4;
-    uint64_t num_groups = static_cast<uint64_t>(64) * kLogicalBankGroups;
+    const uint64_t num_groups = kSparsePimBankGroups;
     vector<uint64_t> partials_by_group(num_groups, 0);
     vector<unordered_set<unsigned>> rows_by_group(num_groups);
     vector<vector<unsigned>> row_stream_by_group(num_groups);
@@ -279,9 +333,11 @@ BgaStats buildBgaStats(const SpmvInputs& inputs, uint64_t bga_acc_capacity)
         if (cluster < 0 || static_cast<size_t>(cluster) >= inputs.clusters.size())
             continue;
 
-        unsigned channel = static_cast<unsigned>(cluster) / kLogicalBankGroups;
-        unsigned bank_group = static_cast<unsigned>(cluster) % kLogicalBankGroups;
-        uint64_t group_idx = channel * kLogicalBankGroups + bank_group;
+        unsigned channel = static_cast<unsigned>(cluster) / kBankGroupsPerPseudoChannel;
+        unsigned bank_group = static_cast<unsigned>(cluster) % kBankGroupsPerPseudoChannel;
+        uint64_t group_idx = channel * kBankGroupsPerPseudoChannel + bank_group;
+        if (group_idx >= num_groups)
+            throw runtime_error("cluster id exceeds SparsePIM bank-group topology");
         for (unsigned row : inputs.rows_by_col[col])
         {
             partials_by_group[group_idx]++;
@@ -297,8 +353,8 @@ BgaStats buildBgaStats(const SpmvInputs& inputs, uint64_t bga_acc_capacity)
             continue;
 
         BgaGroupInfo info;
-        info.channel = group_idx / kLogicalBankGroups;
-        info.bank_group = group_idx % kLogicalBankGroups;
+        info.channel = group_idx / kBankGroupsPerPseudoChannel;
+        info.bank_group = group_idx % kBankGroupsPerPseudoChannel;
         info.partials_before = partials_by_group[group_idx];
         info.partials_after = rows_by_group[group_idx].size();
         info.bacc_instructions = ceilDiv(info.partials_before, kBgaEntriesPerBacc);
