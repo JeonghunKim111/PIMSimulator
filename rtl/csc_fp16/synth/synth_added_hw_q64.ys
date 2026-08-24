@@ -1,0 +1,6 @@
+read_verilog -sv rtl/csc_fp16/csc_descriptor_engine.sv rtl/csc_fp16/csc_agu.sv rtl/csc_fp16/csc_request_tracker.sv rtl/csc_fp16/csc_partial_event_gen.sv rtl/csc_fp16/csc_batch_ingress.sv rtl/csc_fp16/csc_bga.sv rtl/csc_fp16/csc_result_serializer.sv rtl/csc_fp16/csc_burst_packer.sv rtl/csc_fp16/csc_result_transport_ctrl.sv rtl/csc_fp16/csc_control_top.sv rtl/csc_fp16/csc_transport_top.sv rtl/csc_fp16/csc_bg_engine.sv rtl/csc_fp16/csc_added_hw_top.sv
+hierarchy -check -top csc_added_hw_top
+chparam -set BATCH_WIDTH 8 -set INPUT_DEPTH 64 -set ACC_ENTRIES 64 -set COMPARE_W 64 -set OUTPUT_DEPTH 64 csc_added_hw_top
+proc; opt; memory; opt
+synth -top csc_added_hw_top
+stat

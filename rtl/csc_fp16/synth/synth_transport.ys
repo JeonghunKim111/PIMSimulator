@@ -1,0 +1,5 @@
+read_verilog -sv rtl/csc_fp16/csc_result_serializer.sv rtl/csc_fp16/csc_burst_packer.sv rtl/csc_fp16/csc_result_transport_ctrl.sv rtl/csc_fp16/csc_transport_top.sv
+hierarchy -check -top csc_transport_top
+proc; opt; memory; opt
+synth -top csc_transport_top
+stat

@@ -1,0 +1,14 @@
+# Generated-path template. Run through run_synth.sh; do not invoke directly.
+read_verilog -sv @RTL_DIR@/csc_descriptor_engine.sv @RTL_DIR@/csc_agu.sv @RTL_DIR@/csc_request_tracker.sv @RTL_DIR@/csc_partial_event_gen.sv @RTL_DIR@/csc_batch_ingress.sv @RTL_DIR@/csc_bga.sv @RTL_DIR@/csc_result_serializer.sv @RTL_DIR@/csc_burst_packer.sv @RTL_DIR@/csc_result_transport_ctrl.sv @RTL_DIR@/csc_control_top.sv @RTL_DIR@/csc_transport_top.sv @RTL_DIR@/csc_bg_engine.sv @RTL_DIR@/csc_added_hw_top.sv
+hierarchy -check -top @TOP@
+proc
+opt
+memory
+opt
+techmap
+opt
+dfflibmap -liberty @LIB_TYP@
+abc -liberty @LIB_TYP@
+clean
+tee -o @STAT_REPORT@ stat -liberty @LIB_TYP@
+write_verilog -noattr -noexpr @NETLIST@

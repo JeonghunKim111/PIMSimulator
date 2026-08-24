@@ -1,0 +1,5 @@
+read_verilog -sv rtl/csc_fp16/csc_descriptor_engine.sv rtl/csc_fp16/csc_agu.sv rtl/csc_fp16/csc_request_tracker.sv rtl/csc_fp16/csc_control_top.sv
+hierarchy -check -top csc_control_top
+proc; opt; memory; opt
+synth -top csc_control_top
+stat

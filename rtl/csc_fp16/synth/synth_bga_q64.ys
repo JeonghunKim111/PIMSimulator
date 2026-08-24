@@ -1,0 +1,6 @@
+read_verilog -sv rtl/csc_fp16/csc_bga.sv
+hierarchy -check -top csc_bga
+chparam -set ACC_ENTRIES 64 -set COMPARE_W 64 -set INPUT_DEPTH 64 -set OUTPUT_DEPTH 64 -set BATCH_WIDTH 8 csc_bga
+proc; opt; memory; opt
+synth -top csc_bga
+stat
