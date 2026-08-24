@@ -21,6 +21,44 @@ scons
 Tests that consume an exported CSC image are opt-in and require the environment
 variables documented under `docs/csc/`.
 
+## Recovery from a clean machine
+
+This fork is derived from Samsung SAIT's public PIMSimulator repository:
+
+- upstream repository: `https://github.com/SAITPublic/PIMSimulator.git`
+- pinned upstream `dev` commit: `3703d1f19c8f027360cc33a3243eb271e3bb6898`
+- this repository's `dev` branch: FP32 CSC implementation and analytical
+  comparison experiments
+- release baselines: `fp32-final` / `fp32-m7-final` and
+  `fp16-final` / `fp16-m7-final`
+
+Restore the source and record the Samsung upstream relationship with:
+
+```bash
+git clone https://github.com/JeonghunKim111/PIMSimulator.git
+cd PIMSimulator
+git switch dev
+git remote add samsung https://github.com/SAITPublic/PIMSimulator.git
+git fetch samsung dev
+git merge-base --is-ancestor 3703d1f19c8f027360cc33a3243eb271e3bb6898 HEAD
+```
+
+On Ubuntu 24.04, install the build dependencies and run the self-contained
+regression suite with:
+
+```bash
+sudo apt update
+sudo apt install build-essential scons libgtest-dev
+scons -j4
+./sim --gtest_filter='CSCM6IntegrationTest.*:CSCM6SchedulingComparisonTest.*:CSCM7BEndToEndTest.*'
+```
+
+The large sparse matrices and generated preprocessing directories are not part
+of this repository. Clone `https://github.com/JeonghunKim111/SparsePIM.git` as a
+sibling directory and reproduce its data before running the opt-in external
+matrix benchmarks. Those benchmarks expect paths under `../SparsePIM/` and do
+not run during the self-contained regression suite.
+
 ## Contents
 
 - [1. Overview](#1-overview)
@@ -392,6 +430,21 @@ To run a single matrix:
 ```bash
 SPMV_BENCH_MATRIX=Stanford ./sim --gtest_filter=ClusteredSpmvBenchFixture.sparsepim_guided_kmeans_coo_draf_bga_v4_structural_model
 ```
+
+The naive comparison uses the original COO column order, maps column `c` to
+bank group `c % 64`, and performs no clustering or column reordering. The
+simulator topology is 16 pseudo-channels with four bank groups per
+pseudo-channel. Run one matrix with:
+
+```bash
+SPMV_BENCH_MATRIX=cant \
+./sim --gtest_filter=ClusteredSpmvBenchFixture.sparsepim_naive_coo_round_robin_draf_bga_bv4_structural_model
+```
+
+This opt-in test reads `../SparsePIM/sparse_matrix_coo/<matrix>_coo.txt` and
+writes `../SparsePIM/naive_coo_round_robin_bv4_64bg_results.csv`. It verifies
+the declared COO dimensions and NNZ count before constructing the analytical
+mapping.
 
 ### 5.2.1 CSC outer-product partial-stream baseline
 
