@@ -1,0 +1,37 @@
+
+23. Printing statistics.
+
+=== csc_partial_event_gen ===
+
+        +----------Local Count, excluding submodules.
+        |        +-Local Area, excluding submodules.
+        |        | 
+     3350        - wires
+     4961        - wire bits
+       16        - public wires
+     1627        - public wire bits
+       11        - ports
+      838        - port bits
+     4173 1.77E+03 cells
+        1    0.295   AND2_X1
+        1    0.393   AND3_X1
+      317   93.487   AOI21_X1
+      122   41.976   AOI22_X1
+      789 1.01E+03   DFFRNQ_X1
+      195   28.754   INV_X1
+        4    2.556   MUX2_X1
+     2144  421.528   NAND2_X1
+       62   18.285   NAND3_X1
+       57   19.612   NAND4_X1
+       35    6.881   NOR2_X1
+        2     0.59   NOR3_X1
+        1    0.344   NOR4_X1
+      417  122.978   OAI21_X1
+       22    7.569   OAI22_X1
+        2     0.59   OR2_X1
+        1    0.393   OR3_X1
+        1    0.442   XNOR2_X1
+
+   Chip area for module '\csc_partial_event_gen': 1774.977024
+     of which used for sequential elements: 1008.304128 (56.81%)
+

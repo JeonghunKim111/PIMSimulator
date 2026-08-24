@@ -39,3 +39,10 @@ sim
 tags
 .sconsign.dblite
 bin
+
+# Reproducible RTL synthesis products (keep curated reports/provenance only)
+rtl/csc_fp16/results/**/mapped.v
+rtl/csc_fp16/results/**/*_mapped.v
+rtl/csc_fp16/results/**/synth_resolved.ys
+rtl/csc_fp16/results/**/storage_phases.log
+rtl/csc_fp16/results/**/timing_sweep/*/

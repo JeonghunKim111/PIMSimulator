@@ -1,0 +1,39 @@
+
+24. Printing statistics.
+
+=== csc_agu ===
+
+        +----------Local Count, excluding submodules.
+        |        +-Local Area, excluding submodules.
+        |        | 
+      475        - wires
+      771        - wire bits
+       22        - public wires
+      318        - public wire bits
+       20        - ports
+      314        - port bits
+      525  156.254 cells
+       24    7.078   AND2_X1
+        1    0.393   AND3_X1
+        2    0.885   AND4_X1
+       36   10.617   AOI21_X1
+       44   15.139   AOI22_X1
+        8   10.224   DFFRNQ_X1
+       38    5.603   INV_X1
+       95   18.678   NAND2_X1
+       21    6.193   NAND3_X1
+       14    4.817   NAND4_X1
+       61   11.993   NOR2_X1
+        4     1.18   NOR3_X1
+       13    4.473   NOR4_X1
+       75   22.118   OAI21_X1
+        7    2.408   OAI22_X1
+       12    3.539   OR2_X1
+        1    0.393   OR3_X1
+        3    1.327   OR4_X1
+       54   23.888   XNOR2_X1
+       12    5.308   XOR2_X1
+
+   Chip area for module '\csc_agu': 156.254208
+     of which used for sequential elements: 10.223616 (6.54%)
+

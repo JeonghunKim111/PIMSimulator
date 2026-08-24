@@ -1,0 +1,34 @@
+
+8. Printing statistics.
+
+=== csc_request_tracker ===
+
+        +----------Local Count, excluding submodules.
+        | 
+      264 wires
+     1836 wire bits
+       50 public wires
+      306 public wire bits
+       13 ports
+       33 port bits
+      255 cells
+        1   $add
+        1   $adff
+        2   $adffe
+        2   $and
+       32   $dffe
+       48   $eq
+        2   $ge
+       49   $logic_and
+       18   $logic_not
+       30   $lt
+       38   $mux
+        2   $neg
+        2   $not
+        2   $or
+        2   $pmux
+       17   $reduce_and
+        3   $reduce_bool
+        3   $shift
+        1   $sub
+

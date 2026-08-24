@@ -45,9 +45,11 @@ regression with:
 
 ```bash
 sudo apt update
-sudo apt install build-essential scons libgtest-dev
+sudo apt install build-essential scons libgtest-dev verilator yosys
 scons -j4
 ./sim --gtest_filter='CSCFp16*.*:FP16SemanticsCharacterizationTest.*:CSCFP32GoldenBaselineTest.*'
+rtl/csc_fp16/scripts/run_verilator_tests.sh
+rtl/csc_fp16/synth/run_synthesis.sh q64
 ```
 
 The FP16 M7 simulator exposes four measurement scopes:
@@ -67,6 +69,29 @@ Large matrix images are intentionally excluded. Clone
 `https://github.com/JeonghunKim111/SparsePIM.git` as a sibling directory and
 follow its data-reproduction procedure before running the opt-in external image
 tests.
+
+## Standalone FP16 RTL and area experiment
+
+`rtl/csc_fp16/` contains the standalone Batch8/Q64 CSC support RTL, four
+Verilator testbenches, generic Yosys scripts, and portable characterized-mapping
+entry points. The RTL deliberately excludes the existing PIM multiplier/adder,
+DRAM macros, PHY, host reduction, and workload-sized storage.
+
+The repository includes the small reports and provenance hashes from the
+2026-08-19 NanGate 15 nm experiment. Generated mapped netlists and synthesis
+logs are omitted because they are large and reproducible. The Liberty files are
+also not redistributed. To repeat characterized mapping, supply a legally
+obtained library whose hash matches the recorded provenance:
+
+```bash
+export STD_CELL_LIB=/path/to/NanGate_15nm_OCL_typical_conditional_nldm.lib
+rtl/csc_fp16/scripts/run_synth.sh
+rtl/csc_fp16/scripts/run_module_synth.sh csc_added_hw_top
+```
+
+The reported area values are Liberty area units for an FF-based implementation,
+not placed-and-routed square micrometres. Timing/Fmax and iso-area equivalence
+remain unproven without reviewed SDC, LEF/macro views, and physical design.
 
 ## Contents
 

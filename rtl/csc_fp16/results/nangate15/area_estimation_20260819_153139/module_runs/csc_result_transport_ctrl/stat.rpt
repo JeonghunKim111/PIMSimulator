@@ -1,0 +1,40 @@
+
+23. Printing statistics.
+
+=== csc_result_transport_ctrl ===
+
+        +----------Local Count, excluding submodules.
+        |        +-Local Area, excluding submodules.
+        |        | 
+     5287        - wires
+     8053        - wire bits
+       52        - public wires
+     2816        - public wire bits
+       27        - ports
+     1203        - port bits
+     6951 3.09E+03 cells
+       27    7.963   AND2_X1
+        7    2.753   AND3_X1
+       14    6.193   AND4_X1
+       58   17.105   AOI21_X1
+      557  191.644   AOI22_X1
+     1455  1859.42   DFFRNQ_X1
+      121   17.842   INV_X1
+        8    5.112   MUX2_X1
+     4224  830.472   NAND2_X1
+       24    7.078   NAND3_X1
+       30   10.322   NAND4_X1
+      134   26.345   NOR2_X1
+       20    5.898   NOR3_X1
+       23    7.913   NOR4_X1
+       77   22.708   OAI21_X1
+       33   11.354   OAI22_X1
+       10    2.949   OR2_X1
+        6    2.359   OR3_X1
+        8    3.539   OR4_X1
+       87   38.486   XNOR2_X1
+       28   12.386   XOR2_X1
+
+   Chip area for module '\csc_result_transport_ctrl': 3089.842176
+     of which used for sequential elements: 1859.420160 (60.18%)
+

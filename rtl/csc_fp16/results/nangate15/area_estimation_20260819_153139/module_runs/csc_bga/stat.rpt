@@ -1,0 +1,40 @@
+
+24. Printing statistics.
+
+=== csc_bga ===
+
+        +----------Local Count, excluding submodules.
+        |        +-Local Area, excluding submodules.
+        |        | 
+    48717        - wires
+    58237        - wire bits
+      479        - public wires
+     9936        - public wire bits
+       19        - ports
+      162        - port bits
+    58102 2.63E+04 cells
+      347  102.334   AND2_X1
+       89   34.996   AND3_X1
+       53   23.446   AND4_X1
+     4404  1.3E+03   AOI21_X1
+     7363 2.53E+03   AOI22_X1
+     9711 1.24E+04   DFFRNQ_X1
+     1474   217.35   INV_X1
+     3402 2.17E+03   MUX2_X1
+    16386 3.22E+03   NAND2_X1
+      501  147.751   NAND3_X1
+     1590  547.062   NAND4_X1
+     4709  925.827   NOR2_X1
+      501  147.751   NOR3_X1
+      635  218.481   NOR4_X1
+     4187 1.23E+03   OAI21_X1
+     1217  418.726   OAI22_X1
+      351  103.514   OR2_X1
+       87    34.21   OR3_X1
+       94   41.583   OR4_X1
+      588  260.112   XNOR2_X1
+      413  182.698   XOR2_X1
+
+   Chip area for module '\csc_bga': 26278.379520
+     of which used for sequential elements: 12410.191872 (47.23%)
+

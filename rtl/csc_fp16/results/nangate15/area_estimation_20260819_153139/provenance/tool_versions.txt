@@ -1,0 +1,6 @@
+Yosys executable: /home/gs13022/eda/tools/yosys/bin/yosys
+Yosys version: Yosys 0.68+ (git sha1 9eb62484d, Release, GNU /usr/bin/c++ 13.3.0)
+ABC executable: /home/gs13022/eda/tools/yosys/bin/yosys-abc
+ABC version: UC Berkeley, ABC 1.01 (compiled Aug 19 2026 14:51:34)
+OpenSTA executable: /home/gs13022/eda/tools/opensta/bin/sta
+OpenSTA version: 3.1.0

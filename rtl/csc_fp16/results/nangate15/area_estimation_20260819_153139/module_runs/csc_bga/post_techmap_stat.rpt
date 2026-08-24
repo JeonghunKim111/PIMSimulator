@@ -1,0 +1,23 @@
+
+11. Printing statistics.
+
+=== csc_bga ===
+
+        +----------Local Count, excluding submodules.
+        | 
+    18909 wires
+    73444 wire bits
+      488 public wires
+    10006 public wire bits
+       19 ports
+      162 port bits
+    66854 cells
+    14589   $_AND_
+       46   $_DFFE_PN0P_
+     9600   $_DFFE_PP_
+       65   $_DFF_PN0_
+    22331   $_MUX_
+     1620   $_NOT_
+    14346   $_OR_
+     4257   $_XOR_
+

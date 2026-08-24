@@ -5,6 +5,7 @@ on:
     branches:
       - fp16-final
       - fp16-stage3
+      - fp16-step4
   pull_request:
     branches:
       - fp16-final
@@ -34,3 +35,22 @@ jobs:
         run: >-
           ./sim
           --gtest_filter=CSCFp16*.*:FP16SemanticsCharacterizationTest.*:CSCFP32GoldenBaselineTest.*
+
+  rtl-test-and-generic-synthesis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install RTL tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes verilator yosys
+
+      - name: Run standalone RTL tests
+        run: rtl/csc_fp16/scripts/run_verilator_tests.sh
+
+      - name: Run generic Q64 synthesis
+        run: rtl/csc_fp16/synth/run_synthesis.sh q64

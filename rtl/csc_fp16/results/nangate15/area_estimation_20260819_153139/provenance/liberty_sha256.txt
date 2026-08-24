@@ -1,0 +1,3 @@
+095358eae5326b9ab5530b42b9835e190df7bf2d35bdd136b05940bfff01dfc3  /home/gs13022/eda/pdks/nangate15/liberty/NanGate_15nm_OCL_typical_conditional_nldm.lib
+8939a3eb5543f260c916e83e7b579a66da00ed825043ff700147ac94e3ae3575  /home/gs13022/eda/pdks/nangate15/liberty/NanGate_15nm_OCL_slow_conditional_nldm.lib
+32864305bda865fb1f555eaa5270f6e441fe49a8e9b520b8d4aa86bfd48edd0f  /home/gs13022/eda/pdks/nangate15/liberty/NanGate_15nm_OCL_low_temp_conditional_nldm.lib
