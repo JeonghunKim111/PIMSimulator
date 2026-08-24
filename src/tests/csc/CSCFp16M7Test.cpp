@@ -27,7 +27,7 @@ TEST(CSCFp16M7ReducerTest, CanonicalizesBgAndSequenceAndRejectsGaps)
     EXPECT_THROW(reduceCapturedFp16BGAOutputs(4,events),std::invalid_argument);
 }
 
-TEST(CSCFp16M7ModeTest, ThreeModesPreserveAllExistingGoldens)
+TEST(CSCFp16M7ModeTest, ThreeModesPreserveQ64DefaultGoldens)
 {
     Dir d("modes");exportCSCFp16ImageV2(boundary(),d.p.string());auto image=CSCFp16ExecutionImage::load(d.p.string(),CSCFp16ExecutionMode::FP16_IMAGE_V2);
     auto compute=runFp16M7(image,CSCExecutionMode::COMPUTE_ONLY);
@@ -35,12 +35,12 @@ TEST(CSCFp16M7ModeTest, ThreeModesPreserveAllExistingGoldens)
     auto full=runFp16M7(image,CSCExecutionMode::END_TO_END_TIMED);
     auto repeated=runFp16M7(image,CSCExecutionMode::END_TO_END_TIMED);
     ASSERT_EQ(compute.partial_count,169U);EXPECT_EQ(compute.partial_trace_hash,0x2e2867563f3d9cacULL);EXPECT_EQ(compute.compute_complete_cycle,544U);
-    EXPECT_EQ(validation.bga_complete_cycle,564U);EXPECT_EQ(validation.bga_output_count,165U);EXPECT_EQ(validation.bga_output_hash,0x96c3f823f3fe5ab1ULL);
+    EXPECT_EQ(validation.bga_complete_cycle,601U);EXPECT_EQ(validation.bga_output_count,108U);EXPECT_EQ(validation.bga_output_hash,0x15baec2c8d0f6fc6ULL);
     ASSERT_EQ(validation.final_y_bits,full.final_y_bits);EXPECT_EQ(validation.final_y_hash,0x64a5f1109a6f2bd6ULL);EXPECT_EQ(full.final_y_hash,validation.final_y_hash);
-    EXPECT_EQ(full.bga_complete_cycle,564U);EXPECT_EQ(full.writeback_complete_cycle,569U);EXPECT_EQ(full.readback_complete_cycle,618U);EXPECT_EQ(full.end_to_end_cycle,655U);
+    EXPECT_EQ(full.bga_complete_cycle,601U);EXPECT_EQ(full.writeback_complete_cycle,606U);EXPECT_EQ(full.readback_complete_cycle,635U);EXPECT_EQ(full.end_to_end_cycle,664U);
     EXPECT_EQ(full.toJson(),repeated.toJson());EXPECT_EQ(full.final_y_bits,repeated.final_y_bits);
-    EXPECT_EQ(full.bga_output_hash,0x96c3f823f3fe5ab1ULL);
-    EXPECT_EQ(full.write_bursts,42U);EXPECT_EQ(full.read_bursts,42U);EXPECT_FALSE(compute.bga_complete_cycle);EXPECT_FALSE(validation.writeback_complete_cycle);
+    EXPECT_EQ(full.bga_output_hash,0x15baec2c8d0f6fc6ULL);
+    EXPECT_EQ(full.write_bursts,28U);EXPECT_EQ(full.read_bursts,28U);EXPECT_FALSE(compute.bga_complete_cycle);EXPECT_FALSE(validation.writeback_complete_cycle);
     EXPECT_NE(compute.toJson().find("COMPUTE_ONLY"),std::string::npos);
 }
 
@@ -107,6 +107,44 @@ TEST(CSCFp16M7ExternalTest, OptInEndToEndTimedReportsCycles)
              <<" final_y_hash=0x"<<*result.final_y_hash<<std::dec<<'\n';
 }
 
+TEST(CSCFp16M7ExternalTest, OptInTransportOnlyReportsCycles)
+{
+    const char* path=getenv("CSC_FP16_EXTERNAL_IMAGE");
+    if(!path||!*path)GTEST_SKIP()<<"set CSC_FP16_EXTERNAL_IMAGE to a verified v2 image";
+    auto image=CSCFp16ExecutionImage::load(path,CSCFp16ExecutionMode::FP16_IMAGE_V2);
+    auto result=runFp16M7(image,CSCExecutionMode::TRANSPORT_ONLY,2000000000ULL);
+    ASSERT_TRUE(result.compute_complete_cycle);ASSERT_TRUE(result.bga_complete_cycle);
+    ASSERT_TRUE(result.writeback_complete_cycle);ASSERT_TRUE(result.readback_complete_cycle);
+    ASSERT_TRUE(result.bga_output_count);ASSERT_TRUE(result.bga_contribution_count);
+    ASSERT_TRUE(result.transport_record_count);ASSERT_TRUE(result.write_bursts);
+    ASSERT_TRUE(result.read_bursts);ASSERT_TRUE(result.write_bytes);ASSERT_TRUE(result.read_bytes);
+    const bool contribution_conservation=*result.bga_contribution_count==result.nnz;
+    const bool record_conservation=*result.bga_output_count==*result.transport_record_count;
+    const bool byte_conservation=*result.write_bytes==*result.read_bytes;
+    std::cout<<"\n=== FP16 M7 BGA + WRITEBACK + READBACK ONLY ===\n"
+             <<"rows: "<<result.rows<<'\n'<<"cols: "<<result.columns<<'\n'<<"nnz: "<<result.nnz<<'\n'
+             <<"bga_config: "<<result.configuration_preset<<'\n'
+             <<"compute_complete_cycle: "<<*result.compute_complete_cycle<<'\n'
+             <<"bga_complete_cycle: "<<*result.bga_complete_cycle<<'\n'
+             <<"writeback_complete_cycle: "<<*result.writeback_complete_cycle<<'\n'
+             <<"readback_complete_cycle: "<<*result.readback_complete_cycle<<'\n'
+             <<"T_scope_matched_total: "<<*result.readback_complete_cycle<<'\n'
+             <<"physical_bga_output_records: "<<*result.bga_output_count<<'\n'
+             <<"write_requests_issued/completed: "<<*result.write_bursts<<'/'<<*result.write_bursts<<'\n'
+             <<"read_requests_issued/completed: "<<*result.read_bursts<<'/'<<*result.read_bursts<<'\n'
+             <<"writeback_transferred/padding_bytes: "<<*result.write_bytes<<'/'<<*result.padding_bytes<<'\n'
+             <<"readback_transferred_bytes: "<<*result.read_bytes<<'\n'
+             <<"transport_backpressure_cycles: "<<*result.transport_stall_cycles<<'\n'
+             <<"host_reduction_enabled: false\n"
+             <<"contribution_conservation: "<<(contribution_conservation?"PASS":"FAIL")<<'\n'
+             <<"record_conservation: "<<(record_conservation?"PASS":"FAIL")<<'\n'
+             <<"byte_conservation: "<<(byte_conservation?"PASS":"FAIL")<<'\n'
+             <<"=== FP16 M7 TRANSPORT-ONLY RUN COMPLETE ===\n";
+    EXPECT_TRUE(contribution_conservation);EXPECT_TRUE(record_conservation);EXPECT_TRUE(byte_conservation);
+    EXPECT_FALSE(result.host_reduction_complete_cycle);EXPECT_FALSE(result.end_to_end_cycle);
+    EXPECT_FALSE(result.final_y_hash);EXPECT_TRUE(result.final_y_bits.empty());
+}
+
 TEST(CSCFp16M7ExternalTest, OptInMaterializeVerifiedV1AsFp16V2)
 {
     const char* input=getenv("CSC_FP32_EXTERNAL_IMAGE");
@@ -147,13 +185,47 @@ TEST(CSCFp16M7ModeTest, ValidationAcceptWidthIsConfigurable)
     EXPECT_GE(*one.bga_complete_cycle,*wide.bga_complete_cycle);
 }
 
-TEST(CSCFp16M7ModeTest, BGAQ64SensitivityKeepsBatchWidthEight)
+TEST(CSCFp16M7ModeTest, BGAQ64IsDefaultAndKeepsBatchWidthEight)
 {
     Dir d("q64");exportCSCFp16ImageV2(boundary(),d.p.string());
     auto image=CSCFp16ExecutionImage::load(d.p.string(),CSCFp16ExecutionMode::FP16_IMAGE_V2);
-    setenv("CSC_FP16_BGA_CAPACITY","64",1);
     auto q64=runFp16M7(image,CSCExecutionMode::BGA_VALIDATION);
-    unsetenv("CSC_FP16_BGA_CAPACITY");
     EXPECT_EQ(q64.configuration_preset,"FP16_BATCH8_Q64");
     EXPECT_EQ(q64.bga_output_count,108U);
+}
+
+TEST(CSCFp16M7ModeTest, BGAQ16RemainsAvailableAsSensitivityOverride)
+{
+    Dir d("q16");exportCSCFp16ImageV2(boundary(),d.p.string());
+    auto image=CSCFp16ExecutionImage::load(d.p.string(),CSCFp16ExecutionMode::FP16_IMAGE_V2);
+    setenv("CSC_FP16_BGA_CAPACITY","16",1);
+    auto q16=runFp16M7(image,CSCExecutionMode::BGA_VALIDATION);
+    unsetenv("CSC_FP16_BGA_CAPACITY");
+    EXPECT_EQ(q16.configuration_preset,"FP16_BATCH8_Q16");
+}
+
+TEST(CSCFp16M7ModeTest, TransportOnlyStopsAfterReadbackWithoutReduction)
+{
+    Dir d("transport_only");exportCSCFp16ImageV2(boundary(),d.p.string());
+    auto image=CSCFp16ExecutionImage::load(d.p.string(),CSCFp16ExecutionMode::FP16_IMAGE_V2);
+    auto transport=runFp16M7(image,CSCExecutionMode::TRANSPORT_ONLY);
+    EXPECT_EQ(transport.configuration_preset,"FP16_BATCH8_Q64");
+    EXPECT_EQ(transport.bga_contribution_count,169U);
+    EXPECT_EQ(transport.bga_output_count,transport.transport_record_count);
+    EXPECT_EQ(transport.write_bursts,transport.read_bursts);
+    EXPECT_EQ(transport.write_bytes,transport.read_bytes);
+    EXPECT_TRUE(transport.readback_complete_cycle);
+    EXPECT_FALSE(transport.host_reduction_complete_cycle);
+    EXPECT_FALSE(transport.end_to_end_cycle);
+    EXPECT_EQ(transport.host_add_count,0U);
+    EXPECT_TRUE(transport.final_y_bits.empty());
+    EXPECT_NE(transport.toJson().find("\"padding_bytes\""),std::string::npos);
+    EXPECT_NE(transport.toJson().find("\"transport_stall_cycles\""),std::string::npos);
+
+    Dir holder("transport_artifact_holder");fs::create_directories(holder.p);
+    auto output=holder.p/"run";publishFp16M7Artifacts(transport,output.string());
+    EXPECT_TRUE(fs::exists(output/"run_manifest.json"));
+    EXPECT_TRUE(fs::exists(output/"traffic.csv"));
+    EXPECT_TRUE(fs::exists(output/"bga_stats.csv"));
+    EXPECT_FALSE(fs::exists(output/"final_y_fp16.bin"));
 }

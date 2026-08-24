@@ -11,7 +11,12 @@
 
 namespace csc_descriptor {
 
-enum class CSCExecutionMode { COMPUTE_ONLY, BGA_VALIDATION, END_TO_END_TIMED };
+enum class CSCExecutionMode {
+    COMPUTE_ONLY,
+    BGA_VALIDATION,
+    TRANSPORT_ONLY,
+    END_TO_END_TIMED
+};
 
 struct CSCFp16ValidationResult {
     std::vector<CSCFp16Bits> final_y_bits;
@@ -58,8 +63,10 @@ struct CSCFp16M7Result {
     std::optional<uint64_t> end_to_end_cycle;
     std::optional<uint64_t> partial_count, partial_trace_hash;
     std::optional<uint64_t> bga_output_count, bga_output_hash;
+    std::optional<uint64_t> bga_contribution_count;
     std::optional<uint64_t> transport_record_count, write_bursts, read_bursts;
-    std::optional<uint64_t> write_bytes, read_bytes;
+    std::optional<uint64_t> write_bytes, read_bytes, padding_bytes;
+    std::optional<uint64_t> transport_stall_cycles;
     std::optional<uint64_t> final_y_hash, host_add_count, rows_touched;
     std::vector<CSCFp16Bits> final_y_bits;
     CSCFp16ResultRegionPreflight preflight{};

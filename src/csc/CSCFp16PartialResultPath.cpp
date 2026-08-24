@@ -47,8 +47,9 @@ void CSCFp16TransportConfig::validate() const
         !write_latency_cycles || !max_inflight_writes_per_bg ||
         !write_issue_limit_per_rank_per_cycle || !read_latency_cycles ||
         !read_issue_limit_per_channel_per_cycle ||
-        !max_inflight_reads_per_channel || !host_reduce_records_per_cycle ||
-        !host_reduce_latency_cycles)
+        !max_inflight_reads_per_channel ||
+        (host_reduction_enabled &&
+         (!host_reduce_records_per_cycle || !host_reduce_latency_cycles)))
         throw std::invalid_argument("invalid FP16 transport configuration");
 }
 
@@ -222,15 +223,19 @@ void CSCFp16PartialResultPath::step(uint64_t cycle,const std::vector<bool>& fina
     for(uint32_t id=0;id<bg_.size();++id){auto&s=bg_[id]; if(final_done[id])s.lifecycle_complete=true; if(s.lifecycle_complete&&!s.tail_flushed){if(s.packer_count&&s.pending.size()<config_.pending_capacity_bursts_per_bg)formBurst(id,true); if(!s.packer_count)s.tail_flushed=true;}}
     issueWrites();
     if(!counters_.writeback_complete_cycle&&allWritesComplete()){counters_.writeback_complete_cycle=cycle_; readback_started_=true; counters_.readback_start_cycle=cycle_;}
-    if(readback_started_){completeReads();issueReads();if(!counters_.readback_complete_cycle&&allReadsComplete())counters_.readback_complete_cycle=cycle_;reduceOrdered();}
-    if(counters_.readback_complete_cycle&&reduce_bg_==bg_.size()&&returned_.empty()&&!counters_.reduction_complete_cycle){
+    if(readback_started_){completeReads();issueReads();if(!counters_.readback_complete_cycle&&allReadsComplete())counters_.readback_complete_cycle=cycle_;if(config_.host_reduction_enabled)reduceOrdered();}
+    if(counters_.readback_complete_cycle&&!config_.host_reduction_enabled&&!counters_.end_to_end_cycle){
+        if(counters_.outputs_accepted!=counters_.records_packed||counters_.writes_accepted!=counters_.write_completions||counters_.writes_accepted!=counters_.reads_accepted||counters_.reads_accepted!=counters_.read_completions||counters_.write_bytes!=counters_.read_bytes){fail("FP16 transport-only conservation mismatch");return;}
+        counters_.end_to_end_cycle=cycle_;
+    }
+    if(config_.host_reduction_enabled&&counters_.readback_complete_cycle&&reduce_bg_==bg_.size()&&returned_.empty()&&!counters_.reduction_complete_cycle){
         if(counters_.outputs_accepted!=counters_.records_reduced||counters_.writes_accepted!=counters_.read_completions||counters_.write_bytes!=counters_.read_bytes){fail("FP16 end-to-end conservation mismatch");return;}
         counters_.reduction_complete_cycle=cycle_; counters_.end_to_end_cycle=cycle_;
     }
 }
 
 const std::vector<CSCFp16Bits>& CSCFp16PartialResultPath::finalYBits() const
-{ if(!done())throw std::logic_error("FP16 final y before completion"); return final_y_; }
+{ if(!done()||!config_.host_reduction_enabled)throw std::logic_error("FP16 final y unavailable"); return final_y_; }
 
 uint64_t cscFp16TransportRecordTraceFnv1a64(const std::vector<CSCFp16BGAOutputEvent>& trace)
 { uint64_t h=1469598103934665603ULL; for(auto&e:trace){auto b=serializeCSCFp16TransportRecord({e.row_idx,e.value_bits,0});for(auto v:b)addByte(v,h);add32(e.global_bg_id,h);add64(e.sequence,h);}return h; }

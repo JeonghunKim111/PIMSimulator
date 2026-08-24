@@ -40,6 +40,7 @@ struct CSCFp16TransportConfig {
     uint32_t read_latency_cycles = 4;
     uint32_t read_issue_limit_per_channel_per_cycle = 1;
     uint32_t max_inflight_reads_per_channel = 2;
+    bool host_reduction_enabled = true;
     uint32_t host_reduce_records_per_cycle = 4;
     uint32_t host_reduce_latency_cycles = 2;
     uint32_t write_reject_attempts = 0;
@@ -93,6 +94,7 @@ class CSCFp16PartialResultPath {
     bool writebackComplete() const { return counters_.writeback_complete_cycle != 0; }
     bool readbackComplete() const { return counters_.readback_complete_cycle != 0; }
     bool reductionComplete() const { return counters_.reduction_complete_cycle != 0; }
+    bool hostReductionEnabled() const { return config_.host_reduction_enabled; }
     bool failed() const { return error_; }
     const std::string& error() const { return error_message_; }
     const CSCFp16TransportCounters& counters() const { return counters_; }

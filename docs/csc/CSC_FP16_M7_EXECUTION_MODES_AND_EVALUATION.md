@@ -7,11 +7,13 @@ M7 exposes existing boundaries without new hardware:
 | Mode | Boundary |
 |---|---|
 | `COMPUTE_ONLY` | native operand timing, 16-lane MUL, partial capture |
-| `BGA_VALIDATION` | batch8/Q16 BGA plus untimed direct replay |
+| `BGA_VALIDATION` | batch8/Q64 BGA plus untimed direct replay |
+| `TRANSPORT_ONLY` | batch8/Q64 BGA, writeback, and readback; no host reduction |
 | `END_TO_END_TIMED` | M6 write/read/reduction and raw final y |
 
 Mode and precision are separate. BGA modes use
-`FP16_ISO_STRUCTURE_BATCH8_Q16`; serial Q16 and Q8 remain compatibility/stress.
+`FP16_ISO_STRUCTURE_BATCH8_Q64` by default; Q16 remains available as a
+capacity-sensitivity override, while serial Q16 and Q8 remain compatibility/stress.
 Unavailable phase cycles are optional fields, not zero.
 
 ## Fast validation and equivalence
@@ -31,8 +33,11 @@ collection bandwidth, not BGA ingress, compare width, or internal service.
 `CSC_FP16_BGA_CAPACITY` selects a capacity sensitivity while preserving the
 8-entry atomic ingress and one-entry-per-cycle internal service. It sets input
 queue, accumulator, compare, and output queue entry counts together. The
-default is 16; `64` selects `FP16_BATCH8_Q64`. Q64 is a sensitivity result, not
-the main FP16 production preset.
+default is 64 as the current architectural evaluation preset. Setting `16`
+selects `FP16_BATCH8_Q16` as a capacity-sensitivity result. This knob changes
+input queue, accumulator, compare width, and output queue together; neither Q64
+nor Q16 should be described as a structurally faithful SparsePIM RTL instance
+without a separately matched hardware implementation.
 
 ## External image and result-region preflight
 
