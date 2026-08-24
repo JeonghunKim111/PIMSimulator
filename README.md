@@ -5,7 +5,7 @@
 This branch is the final FP16 implementation of the CSC outer-product SpMV
 pipeline and is the latest production branch.
 
-- FP16: branch `fp16-final`, tag `fp16-m7-final`
+- FP16: branch `fp16-final`; historical M7 baseline tag `fp16-m7-final`
 - FP32: branch `fp32-final`, tag `fp32-m7-final`
 - FP16 architecture: 16-lane binary16 compute, BG-decoupled descriptor
   execution, BG-local BGA, partial-result writeback/readback, and deterministic
@@ -20,6 +20,53 @@ scons
 
 External matrix tests are opt-in and require a verified FP16 CSC v2 image as
 documented under `docs/csc/`.
+
+## Recovery from a clean machine
+
+This fork is derived from Samsung SAIT's public PIMSimulator repository:
+
+- upstream repository: `https://github.com/SAITPublic/PIMSimulator.git`
+- pinned upstream `dev` commit: `3703d1f19c8f027360cc33a3243eb271e3bb6898`
+- simulator branch: `fp16-final`
+
+Restore and verify the source relationship with:
+
+```bash
+git clone https://github.com/JeonghunKim111/PIMSimulator.git
+cd PIMSimulator
+git switch fp16-final
+git remote add samsung https://github.com/SAITPublic/PIMSimulator.git
+git fetch samsung dev
+git merge-base --is-ancestor 3703d1f19c8f027360cc33a3243eb271e3bb6898 HEAD
+```
+
+On Ubuntu 24.04, install the dependencies and run the self-contained FP16
+regression with:
+
+```bash
+sudo apt update
+sudo apt install build-essential scons libgtest-dev
+scons -j4
+./sim --gtest_filter='CSCFp16*.*:FP16SemanticsCharacterizationTest.*:CSCFP32GoldenBaselineTest.*'
+```
+
+The FP16 M7 simulator exposes four measurement scopes:
+
+- `COMPUTE_ONLY`: operand timing, 16-lane multiplication, and partial capture;
+- `BGA_VALIDATION`: BGA plus untimed direct replay for functional validation;
+- `TRANSPORT_ONLY`: BGA, writeback, and readback without host reduction; and
+- `END_TO_END_TIMED`: BGA, writeback, readback, and host reduction.
+
+Q64 is the default architectural evaluation preset. Set
+`CSC_FP16_BGA_CAPACITY=16` for the Q16 sensitivity run. This environment
+variable scales the input queue, accumulator, compare width, and output queue
+together, so these presets are not claims of structurally faithful SparsePIM
+RTL equivalence.
+
+Large matrix images are intentionally excluded. Clone
+`https://github.com/JeonghunKim111/SparsePIM.git` as a sibling directory and
+follow its data-reproduction procedure before running the opt-in external image
+tests.
 
 ## Contents
 

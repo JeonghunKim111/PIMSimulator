@@ -1,0 +1,36 @@
+name: PIMSimulator FP16 regression
+
+on:
+  push:
+    branches:
+      - fp16-final
+      - fp16-stage3
+  pull_request:
+    branches:
+      - fp16-final
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential scons libgtest-dev
+
+      - name: Build
+        run: scons -j2
+
+      - name: Run self-contained FP16 regression
+        run: >-
+          ./sim
+          --gtest_filter=CSCFp16*.*:FP16SemanticsCharacterizationTest.*:CSCFP32GoldenBaselineTest.*
